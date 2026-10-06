@@ -184,7 +184,7 @@ class Parser {
       let alias: string | undefined;
       if (this.eatKw("AS")) {
         const t = this.next();
-        alias = t.t === "ident" || t.t === "str" ? t.v : t.v;
+        alias = t.t === "ident" || t.t === "str" ? String(t.v) : undefined;
       } else {
         const t = this.peek();
         if (t && t.t === "ident") alias = t.v; // bare alias
@@ -357,7 +357,7 @@ class Parser {
         const typeTok = this.next();
         if (this.isOp("(")) { while (!this.isOp(")") && this.pos < this.toks.length) this.pos++; this.pos++; }
         if (!this.eatOp(")")) throw new Error("Expected ) after CAST type");
-        return { type: "func", name: `CAST_${typeTok.v.toUpperCase()}`, args: [e] };
+        return { type: "func", name: `CAST_${String(typeTok.v).toUpperCase()}`, args: [e] };
       }
       if (t.v === "CASE") {
         const whens: { cond: Expr; val: Expr }[] = [];
@@ -426,7 +426,7 @@ function likeMatch(val: CellVal, pattern: string): boolean {
   return rx.test(s);
 }
 
-function evalExpr(e: Expr, env: Env, group?: Row[]): CellVal {
+function evalExpr(e: Expr, env: Env, group?: { tables: string[]; row: Row }[]): CellVal {
   switch (e.type) {
     case "num": return e.v;
     case "str": return e.v;
@@ -498,9 +498,10 @@ function evalExpr(e: Expr, env: Env, group?: Row[]): CellVal {
     case "agg": {
       if (!group) throw new Error(`${e.name}() used outside GROUP BY context`);
       const vals: CellVal[] = [];
-      for (const row of group) {
+      for (const trow of group) {
         if (e.arg.type === "star") { vals.push(1); continue; }
-        const v = evalExpr(e.arg, env, undefined);
+        // evaluate the argument against EACH row of the group (not the group env)
+        const v = evalExpr(e.arg, makeEnv([trow]), undefined);
         if (v !== null && v !== "") vals.push(v);
       }
       switch (e.name) {
@@ -508,8 +509,8 @@ function evalExpr(e: Expr, env: Env, group?: Row[]): CellVal {
           if (e.arg.type === "star") return group.length;
           return e.distinct ? new Set(vals).size : vals.length;
         }
-        case "SUM": return vals.reduce((s, v) => s + num(v), 0);
-        case "AVG": return vals.length ? vals.reduce((s, v) => s + num(v), 0) / vals.length : null;
+        case "SUM": return vals.reduce<number>((s, v) => s + num(v), 0);
+        case "AVG": return vals.length ? vals.reduce<number>((s, v) => s + num(v), 0) / vals.length : null;
         case "MIN": return vals.length ? vals.reduce((m, v) => (num(v) < num(m) ? v : m)) : null;
         case "MAX": return vals.length ? vals.reduce((m, v) => (num(v) > num(m) ? v : m)) : null;
         default: throw new Error(`Unknown aggregate ${e.name}`);

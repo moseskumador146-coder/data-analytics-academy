@@ -41,8 +41,17 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning className="dark">
+      <head>
+        <script
+          // Apply saved theme before first paint to avoid flash + hydration mismatch
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem("aaa-theme");if(t==="light"){document.documentElement.classList.remove("dark")}}catch(e){}`,
+          }}
+        />
+      </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#0a0a0b] text-zinc-100`}
+        suppressHydrationWarning
+        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         {children}
         <Toaster />

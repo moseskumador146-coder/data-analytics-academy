@@ -27,6 +27,7 @@ export interface SavedDashboard {
   name: string;
   datasetId: string;
   widgets: unknown[];
+  pages?: unknown[];
   createdAt: string;
 }
 
@@ -65,6 +66,7 @@ export function levelFromXp(xp: number) {
 
 interface AcademyState {
   view: ViewId;
+  theme: "dark" | "light";
   completedLessons: Record<string, boolean>;
   projectSteps: Record<string, boolean>;
   completedProjects: Record<string, boolean>;
@@ -73,12 +75,16 @@ interface AcademyState {
   dashboards: SavedDashboard[];
   workspaceFiles: WorkspaceFile[];
   lastPathLevel: string;
+  coachSteps: Record<string, string[]>;
   setView: (v: ViewId) => void;
+  setTheme: (t: "dark" | "light") => void;
+  toggleTheme: () => void;
   setLastPathLevel: (l: string) => void;
   toggleLesson: (id: string) => void;
   toggleStep: (projectId: string, stepIdx: number) => void;
   completeProject: (projectId: string) => void;
   addXp: (n: number) => void;
+  toggleCoachStep: (view: string, stepId: string) => void;
   saveSheet: (name: string, cells: Record<string, string>) => void;
   deleteSheet: (name: string) => void;
   saveDashboard: (d: SavedDashboard) => void;
@@ -94,6 +100,7 @@ export const useAcademy = create<AcademyState>()(
   persist(
     (set, get) => ({
       view: "home",
+      theme: "dark",
       completedLessons: {},
       projectSteps: {},
       completedProjects: {},
@@ -102,7 +109,16 @@ export const useAcademy = create<AcademyState>()(
       dashboards: [],
       workspaceFiles: [],
       lastPathLevel: "beginner",
+      coachSteps: {},
       setView: (v) => set({ view: v }),
+      setTheme: (t) => {
+        set({ theme: t });
+        if (typeof document !== "undefined") {
+          document.documentElement.classList.toggle("dark", t === "dark");
+          try { localStorage.setItem("aaa-theme", t); } catch {}
+        }
+      },
+      toggleTheme: () => get().setTheme(get().theme === "dark" ? "light" : "dark"),
       setLastPathLevel: (l) => set({ lastPathLevel: l }),
       toggleLesson: (id) => {
         const done = { ...get().completedLessons };
@@ -134,6 +150,14 @@ export const useAcademy = create<AcademyState>()(
         }
       },
       addXp: (n) => set({ xp: get().xp + n }),
+      toggleCoachStep: (view, stepId) => {
+        const all = { ...get().coachSteps };
+        const done = new Set(all[view] ?? []);
+        if (done.has(stepId)) done.delete(stepId);
+        else { done.add(stepId); set({ xp: get().xp + 8 }); }
+        all[view] = [...done];
+        set({ coachSteps: all });
+      },
       saveSheet: (name, cells) =>
         set({
           sheets: {
@@ -181,6 +205,7 @@ export const useAcademy = create<AcademyState>()(
           workspaceFiles: [],
           sheets: {},
           dashboards: [],
+          coachSteps: {},
         }),
     }),
     { name: "data-analytics-academy" }

@@ -1,7 +1,7 @@
 // Deterministic, seeded datasets used across all tools and projects.
 // All generation is pure & seeded so data is identical on every load (no delays, no fetch).
 
-export type Cell = string | number;
+export type Cell = string | number | null;
 export type Row = Record<string, Cell>;
 
 export interface ColumnDef {
@@ -407,6 +407,238 @@ function buildSqlTables(): Record<string, SqlTable> {
   };
 }
 
+/* ---------------- e-commerce orders (LARGE) ---------------- */
+function buildEcomOrders(): Row[] {
+  const rng = mulberry32(2024);
+  const rows: Row[] = [];
+  const cities: [string, string][] = [
+    ["New York", "East"], ["Chicago", "Midwest"], ["Austin", "South"], ["Seattle", "West"],
+    ["Denver", "West"], ["Miami", "South"], ["Boston", "East"], ["Portland", "West"],
+    ["Atlanta", "South"], ["Detroit", "Midwest"], ["Phoenix", "West"], ["Dallas", "South"],
+  ];
+  const brands: Record<string, string[]> = {
+    Electronics: ["Voltix", "Sonique", "Brightcore"],
+    Furniture: ["OakHaus", "LoftLiving"],
+    "Office Supplies": ["PaperTrail", "Deskly"],
+    Appliances: ["BrewMaster", "PureAir"],
+    Sports: ["FitForge", "Trailblaze"],
+  };
+  const statuses = ["delivered", "delivered", "delivered", "shipped", "processing", "cancelled", "returned"];
+  const start = new Date("2025-01-01T00:00:00Z");
+  let id = 50000;
+  for (let i = 0; i < 2600; i++) {
+    const cat = pick(rng, CATEGORIES);
+    const prod = pick(rng, PRODUCTS[cat]);
+    const [city, region] = pick(rng, cities);
+    const units = int(rng, 1, 9);
+    const price = +(prod.price * (1 + (rng() - 0.5) * 0.12)).toFixed(2);
+    const discount = pick(rng, [0, 0, 0, 0.05, 0.1, 0.15, 0.2]);
+    const d = new Date(start.getTime() + Math.floor(rng() * 364) * 86400000);
+    // seasonal peak in Nov-Dec
+    const month = d.getUTCMonth();
+    const seasonBoost = month === 10 || month === 11 ? 1 + rng() * 0.8 : 1;
+    if (rng() > 0.42 * seasonBoost) continue; // thin the volume but keep seasonal shape
+    rows.push({
+      order_id: `EC-${id++}`,
+      order_date: d.toISOString().slice(0, 10),
+      customer: `${pick(rng, FIRST)} ${pick(rng, LAST)}`,
+      city,
+      region,
+      category: cat,
+      subcategory: `${cat.slice(0, 3)}-${pick(rng, ["Core", "Pro", "Lite", "Max"])}`,
+      product: prod.name,
+      brand: pick(rng, brands[cat]),
+      units,
+      unit_price: price,
+      discount_pct: discount,
+      revenue: +(units * price * (1 - discount)).toFixed(2),
+      shipping_cost: +(3.99 + rng() * 14).toFixed(2),
+      payment_method: pick(rng, PAYMENTS),
+      status: pick(rng, statuses),
+      delivery_days: int(rng, 1, 9),
+    });
+  }
+  return rows.sort((a, b) => String(a.order_date).localeCompare(String(b.order_date)));
+}
+
+/* ---------------- web server logs (HUGE) ---------------- */
+function buildServerLogs(): Row[] {
+  const rng = mulberry32(8888);
+  const rows: Row[] = [];
+  const endpoints = [
+    ["/", "GET"], ["/api/products", "GET"], ["/api/cart", "GET"], ["/api/cart", "POST"],
+    ["/api/checkout", "POST"], ["/api/login", "POST"], ["/api/search", "GET"],
+    ["/api/orders", "GET"], ["/static/app.js", "GET"], ["/static/styles.css", "GET"],
+    ["/api/recommendations", "GET"], ["/api/user/profile", "GET"], ["/api/payment", "POST"],
+  ] as [string, string][];
+  const regions = ["us-east", "us-west", "eu-central", "ap-south", "sa-east"];
+  const devices = ["desktop", "mobile", "tablet"];
+  const referrers = ["google.com", "direct", "facebook.com", "newsletter", "twitter.com", "bing.com", ""];
+  const start = new Date("2026-09-28T00:00:00Z");
+  for (let i = 0; i < 6200; i++) {
+    const [endpoint, method] = pick(rng, endpoints);
+    const ts = new Date(start.getTime() + Math.floor(rng() * 3 * 86400000) + Math.floor(rng() * 86400) * 1000);
+    const slow = endpoint === "/api/recommendations" || endpoint === "/api/search";
+    const latency = Math.max(2, Math.round((slow ? 180 : 35) * (0.3 + rng() * 2.2) + (rng() < 0.02 ? rng() * 2000 : 0)));
+    const status = rng() < 0.04 ? pick(rng, [404, 500, 503]) : rng() < 0.1 ? 301 : 200;
+    rows.push({
+      request_id: i + 1,
+      timestamp: ts.toISOString().slice(0, 19).replace("T", " "),
+      method,
+      endpoint,
+      status_code: status,
+      latency_ms: rng() < 0.006 ? -1 : latency, // occasional bad sensor reading
+      bytes_sent: int(rng, 240, 48000),
+      region: pick(rng, regions),
+      device: pick(rng, devices),
+      referrer: rng() < 0.04 ? "" : pick(rng, referrers),
+      cache_status: pick(rng, ["HIT", "MISS", "MISS", "BYPASS"]),
+    });
+  }
+  return rows.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+}
+
+/* ---------------- finance GL export (MESSY MEDIUM) ---------------- */
+function buildFinanceGL(): Row[] {
+  const rng = mulberry32(4242);
+  const rows: Row[] = [];
+  const accounts: [string, string][] = [
+    ["4010", "Product Revenue"], ["4020", "Services Revenue"], ["5010", "Salaries & Wages"],
+    ["5020", "Marketing Spend"], ["5030", "Software & SaaS"], ["6010", "Office Rent"],
+    ["6020", "Travel"], ["6100", "Misc Expenses"],
+  ];
+  const depts = ["Engineering", "Sales", "marketing", " FINANCE", "hr", "Support", "sales"];
+  const curs = ["USD", "USD", "USD", "usd", "EUR"];
+  const start = new Date("2025-01-01T00:00:00Z");
+  let id = 90000;
+  for (let i = 0; i < 640; i++) {
+    const [acct, name] = pick(rng, accounts);
+    let date = new Date(start.getTime() + Math.floor(rng() * 180) * 86400000).toISOString().slice(0, 10);
+    if (rng() < 0.12) date = date.replaceAll("-", "/");
+    let amount: Cell = +(rng() * 24000 + 120).toFixed(2);
+    if (rng() < 0.15) amount = `$${(amount as number).toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+    if (rng() < 0.08) amount = `${(amount as number).toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
+    if (rng() < 0.05) amount = -(amount as number);
+    if (rng() < 0.04) amount = "";
+    const type = String(acct).startsWith("4") ? pick(rng, ["credit", "Credit", "CREDIT"]) : pick(rng, ["debit", "Debit", "DEBIT"]);
+    rows.push({
+      entry_id: `GL-${id++}`,
+      posting_date: date,
+      account: acct,
+      account_name: name,
+      department: rng() < 0.1 ? "" : pick(rng, depts),
+      description: rng() < 0.06 ? `  ${pick(rng, ["Monthly accrual", "Vendor payment", "Card charge", "Payroll batch"])}  ` : pick(rng, ["Monthly accrual", "Vendor payment", "Card charge", "Payroll batch", "Refund", "Bonus", "Ad spend", "Utility bill"]),
+      debit_credit: type,
+      amount,
+      currency: pick(rng, curs),
+      approved: rng() < 0.85 ? "Y" : pick(rng, ["N", "n", ""]),
+    });
+    if (rng() < 0.09) rows.push({ ...rows[rows.length - 1], entry_id: `GL-${id++}` }); // same-entry duplicates
+  }
+  return rows;
+}
+
+/* ---------------- messy HR export (MESSY MEDIUM) ---------------- */
+function buildMessyHR(): Row[] {
+  const rng = mulberry32(31337);
+  const rows: Row[] = [];
+  const depts = ["Sales", "Engineering", "HR", "Finance", "Marketing", "Support"];
+  for (let i = 1; i <= 360; i++) {
+    const dept = pick(rng, depts);
+    let salary: Cell = Math.round((38000 + rng() * 90000) / 500) * 500;
+    if (rng() < 0.18) salary = `$${(salary as number).toLocaleString("en-US")}`;
+    if (rng() < 0.06) salary = "";
+    let tenure: Cell = +(rng() * 9).toFixed(1);
+    if (rng() < 0.12) tenure = "";
+    if (rng() < 0.05) tenure = -tenure;
+    let age: Cell = int(rng, 21, 64);
+    if (rng() < 0.04) age = 999; // sentinel junk
+    let deptOut = dept;
+    if (rng() < 0.22) deptOut = pick(rng, ["engineering", " SALES ", "hr", "Finance ", "MARKETING", "support"]);
+    if (rng() < 0.05) deptOut = "";
+    rows.push({
+      emp_no: `EMP-${1000 + i}`,
+      name: rng() < 0.14 ? `  ${pick(rng, FIRST)} ${pick(rng, LAST)} `.toUpperCase() : `${pick(rng, FIRST)} ${pick(rng, LAST)}`,
+      department: deptOut,
+      age,
+      annual_salary: salary,
+      tenure_years: tenure,
+      performance: +(1 + rng() * 4).toFixed(1),
+      engagement: rng() < 0.08 ? "" : int(rng, 1, 100),
+      attrition_flag: pick(rng, ["Yes", "No", "No", "No", "Y", "N"]),
+      last_review: rng() < 0.1 ? "2025/0" + int(rng, 1, 9) : `2025-0${int(rng, 1, 9)}`,
+    });
+    if (rng() < 0.07) rows.push({ ...rows[rows.length - 1] });
+  }
+  return rows;
+}
+
+/* ---------------- CRM leads (MEDIUM CLEAN) ---------------- */
+function buildCrmLeads(): Row[] {
+  const rng = mulberry32(60606);
+  const rows: Row[] = [];
+  const sources = ["Website", "Webinar", "Trade Show", "Referral", "Cold Email", "LinkedIn Ads"];
+  const industries = ["SaaS", "Retail", "Manufacturing", "Healthcare", "Finance", "Education"];
+  const sizes = ["1-10", "11-50", "51-200", "201-1000", "1000+"];
+  const statuses = ["New", "Contacted", "Qualified", "Proposal", "Won", "Lost"];
+  const start = new Date("2025-06-01T00:00:00Z");
+  for (let i = 1; i <= 920; i++) {
+    const status = pick(rng, statuses);
+    const score = Math.min(100, Math.max(1, Math.round((statuses.indexOf(status) / 5) * 70 + rng() * 35)));
+    rows.push({
+      lead_id: `LD-${String(i).padStart(5, "0")}`,
+      created_date: new Date(start.getTime() + Math.floor(rng() * 300) * 86400000).toISOString().slice(0, 10),
+      company: `${pick(rng, ["Northwind", "Acme", "Lumen", "Vertex", "Bluepeak", "Crafton", "Redwood", "Zenith"])} ${pick(rng, ["LLC", "Inc", "Group", "Labs", "Holdings", "Co"])}`,
+      industry: pick(rng, industries),
+      company_size: pick(rng, sizes),
+      region: pick(rng, REGIONS),
+      source: pick(rng, sources),
+      owner: `${pick(rng, FIRST)} ${pick(rng, LAST)}`,
+      status,
+      lead_score: score,
+      est_value: Math.round((2000 + rng() * 48000) / 100) * 100,
+      days_to_close: status === "Won" || status === "Lost" ? int(rng, 5, 90) : "",
+    });
+  }
+  return rows;
+}
+
+/* ---------------- inventory snapshot (SMALL MESSY) ---------------- */
+function buildInventory(): Row[] {
+  const rng = mulberry32(77);
+  const rows: Row[] = [];
+  const whs = ["WH-1", "WH-2", "WH-3", "wh-1", " WH-2 "];
+  let n = 0;
+  for (const cat of CATEGORIES) {
+    for (const p of PRODUCTS[cat]) {
+      for (const wh of ["WH-1", "WH-2", "WH-3"]) {
+        n++;
+        let cost: Cell = p.price;
+        if (rng() < 0.15) cost = `$${p.price.toFixed(2)}`;
+        if (rng() < 0.05) cost = "";
+        let counted = new Date(2025 + (n % 2), n % 12, 1 + (n % 27)).toISOString().slice(0, 10);
+        if (rng() < 0.18) counted = counted.replaceAll("-", "/");
+        if (rng() < 0.06) counted = "";
+        const onHand = int(rng, 0, 240);
+        rows.push({
+          sku: `SKU-${String(n).padStart(4, "0")}`,
+          product: p.name,
+          category: cat,
+          warehouse: rng() < 0.25 ? pick(rng, whs) : wh,
+          on_hand: rng() < 0.05 ? "" : onHand,
+          reserved: int(rng, 0, Math.max(1, Math.floor(onHand * 0.4))),
+          reorder_point: pick(rng, [20, 40, 60, 80]),
+          unit_cost: cost,
+          last_counted: counted,
+          shrinkage_units: rng() < 0.85 ? 0 : int(rng, 1, 6),
+        });
+        if (rng() < 0.06) rows.push({ ...rows[rows.length - 1] });
+      }
+    }
+  }
+  return rows;
+}
+
 /* ---------------- module-level singletons ---------------- */
 const cache: Record<string, Dataset> = {};
 
@@ -540,18 +772,206 @@ export function getTickets() {
   );
 }
 
+export function getEcomOrders() {
+  return makeDataset(
+    "ecom_orders",
+    "E-commerce Orders 2025 (Large)",
+    "2,000+ orders with city, brand, discounts, shipping and status — realistic seasonal peaks. Great for big-file practice.",
+    [
+      { key: "order_id", name: "Order ID", type: "text" },
+      { key: "order_date", name: "Order Date", type: "date" },
+      { key: "customer", name: "Customer", type: "text" },
+      { key: "city", name: "City", type: "text" },
+      { key: "region", name: "Region", type: "text" },
+      { key: "category", name: "Category", type: "text" },
+      { key: "subcategory", name: "Subcategory", type: "text" },
+      { key: "product", name: "Product", type: "text" },
+      { key: "brand", name: "Brand", type: "text" },
+      { key: "units", name: "Units", type: "number" },
+      { key: "unit_price", name: "Unit Price", type: "currency" },
+      { key: "discount_pct", name: "Discount", type: "number" },
+      { key: "revenue", name: "Revenue", type: "currency" },
+      { key: "shipping_cost", name: "Shipping", type: "currency" },
+      { key: "payment_method", name: "Payment", type: "text" },
+      { key: "status", name: "Status", type: "text" },
+      { key: "delivery_days", name: "Delivery Days", type: "number" },
+    ],
+    buildEcomOrders()
+  );
+}
+
+export function getServerLogs() {
+  return makeDataset(
+    "server_logs",
+    "Web Server Logs 3 Days (Huge)",
+    "6,000+ raw request logs: endpoint, status codes, latency, cache, device. Find the slow endpoints and error spikes.",
+    [
+      { key: "request_id", name: "Request ID", type: "number" },
+      { key: "timestamp", name: "Timestamp", type: "text" },
+      { key: "method", name: "Method", type: "text" },
+      { key: "endpoint", name: "Endpoint", type: "text" },
+      { key: "status_code", name: "Status", type: "number" },
+      { key: "latency_ms", name: "Latency (ms)", type: "number" },
+      { key: "bytes_sent", name: "Bytes", type: "number" },
+      { key: "region", name: "Region", type: "text" },
+      { key: "device", name: "Device", type: "text" },
+      { key: "referrer", name: "Referrer", type: "text" },
+      { key: "cache_status", name: "Cache", type: "text" },
+    ],
+    buildServerLogs()
+  );
+}
+
+export function getFinanceGL() {
+  return makeDataset(
+    "finance_gl",
+    "Finance GL Export (Messy)",
+    "650+ general-ledger rows straight from the ERP: mixed date formats, $-text amounts, case-variant departments, duplicates.",
+    [
+      { key: "entry_id", name: "Entry ID", type: "text" },
+      { key: "posting_date", name: "Posting Date", type: "text" },
+      { key: "account", name: "Account", type: "text" },
+      { key: "account_name", name: "Account Name", type: "text" },
+      { key: "department", name: "Department", type: "text" },
+      { key: "description", name: "Description", type: "text" },
+      { key: "debit_credit", name: "Debit/Credit", type: "text" },
+      { key: "amount", name: "Amount", type: "text" },
+      { key: "currency", name: "Currency", type: "text" },
+      { key: "approved", name: "Approved", type: "text" },
+    ],
+    buildFinanceGL()
+  );
+}
+
+export function getMessyHR() {
+  return makeDataset(
+    "messy_hr",
+    "HR Export (Messy)",
+    "380+ employee rows with $-text salaries, junk ages (999), case-variant departments, mixed review dates and duplicates.",
+    [
+      { key: "emp_no", name: "Employee No", type: "text" },
+      { key: "name", name: "Name", type: "text" },
+      { key: "department", name: "Department", type: "text" },
+      { key: "age", name: "Age", type: "number" },
+      { key: "annual_salary", name: "Annual Salary", type: "text" },
+      { key: "tenure_years", name: "Tenure (yrs)", type: "text" },
+      { key: "performance", name: "Performance", type: "number" },
+      { key: "engagement", name: "Engagement", type: "number" },
+      { key: "attrition_flag", name: "Attrition", type: "text" },
+      { key: "last_review", name: "Last Review", type: "text" },
+    ],
+    buildMessyHR()
+  );
+}
+
+export function getCrmLeads() {
+  return makeDataset(
+    "crm_leads",
+    "CRM Leads (Medium)",
+    "900+ pipeline leads: source, industry, size, owner, score, stage and estimated value — perfect for funnel dashboards.",
+    [
+      { key: "lead_id", name: "Lead ID", type: "text" },
+      { key: "created_date", name: "Created", type: "date" },
+      { key: "company", name: "Company", type: "text" },
+      { key: "industry", name: "Industry", type: "text" },
+      { key: "company_size", name: "Company Size", type: "text" },
+      { key: "region", name: "Region", type: "text" },
+      { key: "source", name: "Source", type: "text" },
+      { key: "owner", name: "Owner", type: "text" },
+      { key: "status", name: "Stage", type: "text" },
+      { key: "lead_score", name: "Lead Score", type: "number" },
+      { key: "est_value", name: "Est. Value", type: "currency" },
+      { key: "days_to_close", name: "Days to Close", type: "number" },
+    ],
+    buildCrmLeads()
+  );
+}
+
+export function getInventory() {
+  return makeDataset(
+    "inventory",
+    "Inventory Snapshot (Small, Messy)",
+    "Warehouse stock counts with case-variant warehouses, $-text costs, mixed date formats and duplicate rows.",
+    [
+      { key: "sku", name: "SKU", type: "text" },
+      { key: "product", name: "Product", type: "text" },
+      { key: "category", name: "Category", type: "text" },
+      { key: "warehouse", name: "Warehouse", type: "text" },
+      { key: "on_hand", name: "On Hand", type: "number" },
+      { key: "reserved", name: "Reserved", type: "number" },
+      { key: "reorder_point", name: "Reorder Point", type: "number" },
+      { key: "unit_cost", name: "Unit Cost", type: "text" },
+      { key: "last_counted", name: "Last Counted", type: "text" },
+      { key: "shrinkage_units", name: "Shrinkage", type: "number" },
+    ],
+    buildInventory()
+  );
+}
+
+/* ---------------- sample-file catalog (for pickers & library) ---------------- */
+export interface SampleFileInfo {
+  id: string;
+  name: string;
+  rows: number;
+  cols: number;
+  size: "Small" | "Medium" | "Large" | "Huge";
+  messy: boolean;
+  description: string;
+}
+
+const SIZE_ORDER: Record<SampleFileInfo["size"], number> = { Small: 0, Medium: 1, Large: 2, Huge: 3 };
+
+function sizeOf(n: number): SampleFileInfo["size"] {
+  if (n <= 200) return "Small";
+  if (n <= 1000) return "Medium";
+  if (n <= 3000) return "Large";
+  return "Huge";
+}
+
+const CATALOG_IDS = [
+  "clean_sales", "marketing", "hr", "traffic", "tickets", "crm_leads",
+  "ecom_orders", "server_logs", "messy_sales", "messy_hr", "finance_gl", "inventory",
+];
+
+let catalogCache: SampleFileInfo[] | null = null;
+export function getSampleCatalog(): SampleFileInfo[] {
+  if (!catalogCache) {
+    catalogCache = CATALOG_IDS.map((id) => {
+      const ds = getDatasetById(id)!;
+      return {
+        id: ds.id,
+        name: ds.name,
+        rows: ds.rows.length,
+        cols: ds.columns.length,
+        size: sizeOf(ds.rows.length),
+        messy: /messy|gl/i.test(ds.id) || ds.id === "inventory",
+        description: ds.description,
+      };
+    }).sort((a, b) => SIZE_ORDER[a.size] - SIZE_ORDER[b.size] || a.name.localeCompare(b.name));
+  }
+  return catalogCache;
+}
+
 export function getAllDatasets(): Dataset[] {
-  return [getCleanSales(), getMarketing(), getHR(), getTraffic(), getTickets()];
+  return CATALOG_IDS.map((id) => getDatasetById(id)!).filter(Boolean);
 }
 
 export function getDatasetById(id: string): Dataset | undefined {
-  if (id === "clean_sales") return getCleanSales();
-  if (id === "messy_sales") return getMessySales();
-  if (id === "marketing") return getMarketing();
-  if (id === "hr") return getHR();
-  if (id === "traffic") return getTraffic();
-  if (id === "tickets") return getTickets();
-  return getAllDatasets().find((d) => d.id === id);
+  switch (id) {
+    case "clean_sales": return getCleanSales();
+    case "messy_sales": return getMessySales();
+    case "marketing": return getMarketing();
+    case "hr": return getHR();
+    case "traffic": return getTraffic();
+    case "tickets": return getTickets();
+    case "ecom_orders": return getEcomOrders();
+    case "server_logs": return getServerLogs();
+    case "finance_gl": return getFinanceGL();
+    case "messy_hr": return getMessyHR();
+    case "crm_leads": return getCrmLeads();
+    case "inventory": return getInventory();
+    default: return undefined;
+  }
 }
 
 let sqlTablesCache: Record<string, SqlTable> | null = null;

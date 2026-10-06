@@ -1,0 +1,749 @@
+     1→// Mini SQL engine — supports SELECT / aggregates / JOIN / WHERE / GROUP BY / HAVING /
+     2→// ORDER BY / LIMIT / DISTINCT over in-memory tables. Zero dependencies, instant.
+     3→
+     4→import type { Row } from "./datasets";
+     5→
+     6→/* ---------- types ---------- */
+     7→type Tok =
+     8→  | { t: "ident"; v: string; q?: string }
+     9→  | { t: "num"; v: number }
+    10→  | { t: "str"; v: string }
+    11→  | { t: "op"; v: string }
+    12→  | { t: "kw"; v: string };
+    13→
+    14→interface ColRef {
+    15→  type: "col";
+    16→  table?: string;
+    17→  name: string;
+    18→}
+    19→interface NumLit {
+    20→  type: "num";
+    21→  v: number;
+    22→}
+    23→interface StrLit {
+    24→  type: "str";
+    25→  v: string;
+    26→}
+    27→interface Star {
+    28→  type: "star";
+    29→  table?: string;
+    30→}
+    31→interface Bin {
+    32→  type: "bin";
+    33→  op: string;
+    34→  l: Expr;
+    35→  r: Expr;
+    36→}
+    37→interface Func {
+    38→  type: "func";
+    39→  name: string;
+    40→  args: Expr[];
+    41→}
+    42→interface Agg {
+    43→  type: "agg";
+    44→  name: string;
+    45→  arg: Expr | Star;
+    46→  distinct?: boolean;
+    47→}
+    48→interface InE {
+    49→  type: "in";
+    50→  e: Expr;
+    51→  list: Expr[];
+    52→  not: boolean;
+    53→}
+    54→interface LikeE {
+    55→  type: "like";
+    56→  e: Expr;
+    57→  pattern: string;
+    58→  not: boolean;
+    59→}
+    60→interface NullE {
+    61→  type: "isnull";
+    62→  e: Expr;
+    63→  not: boolean;
+    64→}
+    65→interface BetweenE {
+    66→  type: "between";
+    67→  e: Expr;
+    68→  lo: Expr;
+    69→  hi: Expr;
+    70→  not: boolean;
+    71→}
+    72→interface CaseE {
+    73→  type: "case";
+    74→  whens: { cond: Expr; val: Expr }[];
+    75→  else: Expr | null;
+    76→}
+    77→type Expr = ColRef | NumLit | StrLit | Star | Bin | Func | Agg | InE | LikeE | NullE | BetweenE | CaseE;
+    78→
+    79→interface SelectItem {
+    80→  expr: Expr;
+    81→  alias?: string;
+    82→}
+    83→interface Join {
+    84→  table: string;
+    85→  alias?: string;
+    86→  on: Expr;
+    87→  kind: "inner" | "left";
+    88→}
+    89→interface Query {
+    90→  ctes: { name: string; query: Query }[];
+    91→  distinct: boolean;
+    92→  items: SelectItem[];
+    93→  from: string;
+    94→  fromAlias?: string;
+    95→  joins: Join[];
+    96→  where?: Expr;
+    97→  groupBy: Expr[];
+    98→  having?: Expr;
+    99→  orderBy: { expr: Expr; dir: 1 | -1 }[];
+   100→  limit?: number;
+   101→}
+   102→
+   103→/* ---------- lexer ---------- */
+   104→const KW = new Set([
+   105→  "SELECT","FROM","WHERE","GROUP","BY","HAVING","ORDER","LIMIT","JOIN","INNER","LEFT","ON","AS","AND","OR","NOT","IN","LIKE","IS","NULL","BETWEEN","DISTINCT","ASC","DESC","COUNT","SUM","AVG","MIN","MAX","UPPER","LOWER","ROUND","ABS","COALESCE","LENGTH","WITH","SUBSTR","SUBSTRING","TRIM","CAST","CASE","WHEN","THEN","ELSE","END","JULIANDAY","INT","INTEGER","REAL","TEXT","DATE","FLOAT","NUMERIC","VARCHAR",
+   106→]);
+   107→
+   108→function lex(src: string): Tok[] {
+   109→  const toks: Tok[] = [];
+   110→  let i = 0;
+   111→  while (i < src.length) {
+   112→    const c = src[i];
+   113→    if (/\s/.test(c)) { i++; continue; }
+   114→    if (c === "-" && src[i + 1] === "-") { while (i < src.length && src[i] !== "\n") i++; continue; }
+   115→    if (/[A-Za-z_]/.test(c)) {
+   116→      let j = i;
+   117→      while (j < src.length && /[A-Za-z0-9_.]/.test(src[j])) j++;
+   118→      const word = src.slice(i, j);
+   119→      const up = word.toUpperCase();
+   120→      if (KW.has(up)) toks.push({ t: "kw", v: up });
+   121→      else if (word.includes(".")) {
+   122→        const [t, n] = word.split(".");
+   123→        toks.push({ t: "ident", v: n, q: t });
+   124→      } else toks.push({ t: "ident", v: word });
+   125→      i = j;
+   126→      continue;
+   127→    }
+   128→    if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1] ?? ""))) {
+   129→      let j = i;
+   130→      while (j < src.length && /[0-9.]/.test(src[j])) j++;
+   131→      toks.push({ t: "num", v: parseFloat(src.slice(i, j)) });
+   132→      i = j;
+   133→      continue;
+   134→    }
+   135→    if (c === "'" || c === '"') {
+   136→      let j = i + 1;
+   137→      let s = "";
+   138→      while (j < src.length && src[j] !== c) {
+   139→        if (src[j] === "\\" && src[j + 1] === c) { s += c; j += 2; }
+   140→        else s += src[j++];
+   141→      }
+   142→      toks.push({ t: "str", v: s });
+   143→      i = j + 1;
+   144→      continue;
+   145→    }
+   146→    const two = src.slice(i, i + 2);
+   147→    if (["<=", ">=", "!=", "<>"].includes(two)) { toks.push({ t: "op", v: two === "<>" ? "!=" : two }); i += 2; continue; }
+   148→    if ("=<>+-*/(),;".includes(c)) { toks.push({ t: "op", v: c }); i++; continue; }
+   149→    throw new Error(`Unexpected character '${c}' at position ${i}`);
+   150→  }
+   151→  return toks;
+   152→}
+   153→
+   154→/* ---------- parser ---------- */
+   155→class Parser {
+   156→  pos = 0;
+   157→  constructor(private toks: Tok[]) {}
+   158→  peek(): Tok | undefined { return this.toks[this.pos]; }
+   159→  next(): Tok { const t = this.toks[this.pos++]; if (!t) throw new Error("Unexpected end of query"); return t; }
+   160→  isKw(v: string): boolean { const t = this.peek(); return !!t && t.t === "kw" && t.v === v; }
+   161→  eatKw(v: string): boolean { if (this.isKw(v)) { this.pos++; return true; } return false; }
+   162→  expectKw(v: string) { if (!this.eatKw(v)) throw new Error(`Expected ${v}`); }
+   163→  isOp(v: string): boolean { const t = this.peek(); return !!t && t.t === "op" && t.v === v; }
+   164→  eatOp(v: string): boolean { if (this.isOp(v)) { this.pos++; return true; } return false; }
+   165→
+   166→  parseQuery(strict = true): Query {
+   167→    const ctes: { name: string; query: Query }[] = [];
+   168→    if (this.eatKw("WITH")) {
+   169→      do {
+   170→        const nameTok = this.next();
+   171→        if (nameTok.t !== "ident") throw new Error("Expected CTE name after WITH");
+   172→        this.expectKw("AS");
+   173→        if (!this.eatOp("(")) throw new Error("Expected ( after AS in CTE");
+   174→        const body = this.parseQuery(false);
+   175→        if (!this.eatOp(")")) throw new Error("Expected ) to close CTE body");
+   176→        ctes.push({ name: nameTok.v, query: body });
+   177→      } while (this.eatOp(","));
+   178→    }
+   179→    this.expectKw("SELECT");
+   180→    const distinct = this.eatKw("DISTINCT");
+   181→    const items: SelectItem[] = [];
+   182→    do {
+   183→      const expr = this.parseExpr();
+   184→      let alias: string | undefined;
+   185→      if (this.eatKw("AS")) {
+   186→        const t = this.next();
+   187→        alias = t.t === "ident" || t.t === "str" ? t.v : t.v;
+   188→      } else {
+   189→        const t = this.peek();
+   190→        if (t && t.t === "ident") alias = t.v; // bare alias
+   191→        if (alias) this.pos++;
+   192→      }
+   193→      items.push({ expr, alias });
+   194→    } while (this.eatOp(","));
+   195→
+   196→    this.expectKw("FROM");
+   197→    const fromT = this.next();
+   198→    if (fromT.t !== "ident") throw new Error("Expected table name after FROM");
+   199→    const from = fromT.v;
+   200→    const fromAlias = this.peek() && this.peek()!.t === "ident" && !this.isKwAny() ? (this.next() as { v: string }).v : undefined;
+   201→
+   202→    const joins: Join[] = [];
+   203→    for (;;) {
+   204→      let kind: "inner" | "left" | null = null;
+   205→      if (this.eatKw("INNER")) { this.expectKw("JOIN"); kind = "inner"; }
+   206→      else if (this.eatKw("LEFT")) { this.expectKw("JOIN"); kind = "left"; }
+   207→      else if (this.eatKw("JOIN")) kind = "inner";
+   208→      if (!kind) break;
+   209→      const t = this.next();
+   210→      if (t.t !== "ident") throw new Error("Expected table name after JOIN");
+   211→      const alias = this.peek() && this.peek()!.t === "ident" && !this.isKwAny() ? (this.next() as { v: string }).v : undefined;
+   212→      this.expectKw("ON");
+   213→      const on = this.parseExpr();
+   214→      joins.push({ table: t.v, alias, on, kind });
+   215→    }
+   216→
+   217→    let where: Expr | undefined;
+   218→    if (this.eatKw("WHERE")) where = this.parseExpr();
+   219→
+   220→    const groupBy: Expr[] = [];
+   221→    if (this.eatKw("GROUP")) {
+   222→      this.expectKw("BY");
+   223→      do { groupBy.push(this.parseExpr()); } while (this.eatOp(","));
+   224→    }
+   225→    let having: Expr | undefined;
+   226→    if (this.eatKw("HAVING")) having = this.parseExpr();
+   227→
+   228→    const orderBy: { expr: Expr; dir: 1 | -1 }[] = [];
+   229→    if (this.eatKw("ORDER")) {
+   230→      this.expectKw("BY");
+   231→      do {
+   232→        const e = this.parseExpr();
+   233→        let dir: 1 | -1 = 1;
+   234→        if (this.eatKw("DESC")) dir = -1;
+   235→        else this.eatKw("ASC");
+   236→        orderBy.push({ expr: e, dir });
+   237→      } while (this.eatOp(","));
+   238→    }
+   239→    let limit: number | undefined;
+   240→    if (this.eatKw("LIMIT")) {
+   241→      const t = this.next();
+   242→      if (t.t !== "num") throw new Error("LIMIT expects a number");
+   243→      limit = t.v;
+   244→    }
+   245→    this.eatOp(";");
+   246→    if (strict && this.pos < this.toks.length) throw new Error(`Unexpected token after end of query`);
+   247→    return { ctes, distinct, items, from, fromAlias, joins, where, groupBy, having, orderBy, limit };
+   248→  }
+   249→
+   250→  isKwAny(): boolean { const t = this.peek(); return !!t && t.t === "kw"; }
+   251→
+   252→  parseExpr(): Expr { return this.parseOr(); }
+   253→  parseOr(): Expr {
+   254→    let l = this.parseAnd();
+   255→    while (this.eatKw("OR")) l = { type: "bin", op: "OR", l, r: this.parseAnd() };
+   256→    return l;
+   257→  }
+   258→  parseAnd(): Expr {
+   259→    let l = this.parseNot();
+   260→    while (this.eatKw("AND")) l = { type: "bin", op: "AND", l, r: this.parseNot() };
+   261→    return l;
+   262→  }
+   263→  parseNot(): Expr {
+   264→    if (this.eatKw("NOT")) {
+   265→      const e = this.parseNot();
+   266→      if (e.type === "in") return { ...e, not: !e.not };
+   267→      if (e.type === "like") return { ...e, not: !e.not };
+   268→      if (e.type === "isnull") return { ...e, not: !e.not };
+   269→      if (e.type === "between") return { ...e, not: !e.not };
+   270→      throw new Error("NOT only supported before IN/LIKE/IS NULL/BETWEEN");
+   271→    }
+   272→    return this.parseCmp();
+   273→  }
+   274→  parseCmp(): Expr {
+   275→    const l = this.parseAdd();
+   276→    const t = this.peek();
+   277→    if (t && t.t === "op" && ["=", "!=", ">", "<", ">=", "<="].includes(t.v)) {
+   278→      this.pos++;
+   279→      return { type: "bin", op: t.v, l, r: this.parseAdd() };
+   280→    }
+   281→    if (this.isKw("IN")) {
+   282→      this.pos++;
+   283→      if (!this.eatOp("(")) throw new Error("Expected ( after IN");
+   284→      const list: Expr[] = [];
+   285→      do { list.push(this.parseExpr()); } while (this.eatOp(","));
+   286→      if (!this.eatOp(")")) throw new Error("Expected ) after IN list");
+   287→      return { type: "in", e: l, list, not: false };
+   288→    }
+   289→    if (this.isKw("LIKE")) {
+   290→      this.pos++;
+   291→      const p = this.next();
+   292→      if (p.t !== "str") throw new Error("LIKE expects a string pattern");
+   293→      return { type: "like", e: l, pattern: p.v, not: false };
+   294→    }
+   295→    if (this.isKw("IS")) {
+   296→      this.pos++;
+   297→      const not = this.eatKw("NOT");
+   298→      this.expectKw("NULL");
+   299→      return { type: "isnull", e: l, not };
+   300→    }
+   301→    if (this.isKw("BETWEEN")) {
+   302→      this.pos++;
+   303→      const lo = this.parseAdd();
+   304→      this.expectKw("AND");
+   305→      const hi = this.parseAdd();
+   306→      return { type: "between", e: l, lo, hi, not: false };
+   307→    }
+   308→    return l;
+   309→  }
+   310→  parseAdd(): Expr {
+   311→    let l = this.parseMul();
+   312→    for (;;) {
+   313→      if (this.isOp("+") || this.isOp("-")) {
+   314→        const op = (this.next() as { v: string }).v;
+   315→        l = { type: "bin", op, l, r: this.parseMul() };
+   316→      } else return l;
+   317→    }
+   318→  }
+   319→  parseMul(): Expr {
+   320→    let l = this.parseUnary();
+   321→    for (;;) {
+   322→      if (this.isOp("*") || this.isOp("/")) {
+   323→        const op = (this.next() as { v: string }).v;
+   324→        l = { type: "bin", op, l, r: this.parseUnary() };
+   325→      } else return l;
+   326→    }
+   327→  }
+   328→  parseUnary(): Expr {
+   329→    if (this.isOp("-")) { this.pos++; return { type: "bin", op: "*", l: { type: "num", v: -1 }, r: this.parseUnary() }; }
+   330→    return this.parsePrimary();
+   331→  }
+   332→  parsePrimary(): Expr {
+   333→    const t = this.next();
+   334→    if (t.t === "num") return { type: "num", v: t.v };
+   335→    if (t.t === "str") return { type: "str", v: t.v };
+   336→    if (t.t === "op" && t.v === "*") return { type: "star" };
+   337→    if (t.t === "kw") {
+   338→      if (["COUNT","SUM","AVG","MIN","MAX"].includes(t.v)) {
+   339→        if (!this.eatOp("(")) throw new Error(`Expected ( after ${t.v}`);
+   340→        const distinct = this.eatKw("DISTINCT");
+   341→        if (this.isOp("*")) { this.pos++; if (!this.eatOp(")")) throw new Error("Expected )"); return { type: "agg", name: t.v, arg: { type: "star" }, distinct: false }; }
+   342→        const arg = this.parseExpr();
+   343→        if (!this.eatOp(")")) throw new Error("Expected )");
+   344→        return { type: "agg", name: t.v, arg, distinct };
+   345→      }
+   346→      if (["UPPER","LOWER","ROUND","ABS","COALESCE","LENGTH","SUBSTR","SUBSTRING","TRIM"].includes(t.v)) {
+   347→        if (!this.eatOp("(")) throw new Error(`Expected ( after ${t.v}`);
+   348→        const args: Expr[] = [];
+   349→        do { args.push(this.parseExpr()); } while (this.eatOp(","));
+   350→        if (!this.eatOp(")")) throw new Error("Expected )");
+   351→        return { type: "func", name: t.v, args };
+   352→      }
+   353→      if (t.v === "CAST") {
+   354→        if (!this.eatOp("(")) throw new Error("Expected ( after CAST");
+   355→        const e = this.parseExpr();
+   356→        this.expectKw("AS");
+   357→        const typeTok = this.next();
+   358→        if (this.isOp("(")) { while (!this.isOp(")") && this.pos < this.toks.length) this.pos++; this.pos++; }
+   359→        if (!this.eatOp(")")) throw new Error("Expected ) after CAST type");
+   360→        return { type: "func", name: `CAST_${typeTok.v.toUpperCase()}`, args: [e] };
+   361→      }
+   362→      if (t.v === "CASE") {
+   363→        const whens: { cond: Expr; val: Expr }[] = [];
+   364→        let elseVal: Expr | null = null;
+   365→        while (this.eatKw("WHEN")) {
+   366→          const cond = this.parseExpr();
+   367→          this.expectKw("THEN");
+   368→          whens.push({ cond, val: this.parseExpr() });
+   369→        }
+   370→        if (!whens.length) throw new Error("CASE requires at least one WHEN");
+   371→        if (this.eatKw("ELSE")) elseVal = this.parseExpr();
+   372→        this.expectKw("END");
+   373→        return { type: "case", whens, else: elseVal };
+   374→      }
+   375→      if (t.v === "JULIANDAY") {
+   376→        if (!this.eatOp("(")) throw new Error("Expected ( after JULIANDAY");
+   377→        const arg = this.parseExpr();
+   378→        if (!this.eatOp(")")) throw new Error("Expected )");
+   379→        return { type: "func", name: "JULIANDAY", args: [arg] };
+   380→      }
+   381→      if (t.v === "NULL") return { type: "str", v: "" };
+   382→      throw new Error(`Unexpected keyword ${t.v}`);
+   383→    }
+   384→    if (t.t === "op" && t.v === "(") {
+   385→      const e = this.parseExpr();
+   386→      if (!this.eatOp(")")) throw new Error("Expected )");
+   387→      return e;
+   388→    }
+   389→    if (t.t === "ident") {
+   390→      // generic function call: any ident followed by ( — e.g. substr(x, 1, 7)
+   391→      if (this.isOp("(")) {
+   392→        this.pos++;
+   393→        const args: Expr[] = [];
+   394→        if (this.isOp(")")) this.pos++;
+   395→        else {
+   396→          do { args.push(this.parseExpr()); } while (this.eatOp(","));
+   397→          if (!this.eatOp(")")) throw new Error("Expected )");
+   398→        }
+   399→        return { type: "func", name: t.v.toUpperCase(), args };
+   400→      }
+   401→      return { type: "col", name: t.v, table: t.q };
+   402→    }
+   403→    throw new Error(`Unexpected token`);
+   404→  }
+   405→}
+   406→
+   407→/* ---------- evaluation ---------- */
+   408→type Env = {
+   409→  get(table: string | undefined, name: string): { found: boolean; value: CellVal };
+   410→};
+   411→type CellVal = string | number | null;
+   412→function num(v: CellVal): number {
+   413→  if (v === null || v === "") return 0;
+   414→  const n = typeof v === "number" ? v : parseFloat(v);
+   415→  return isNaN(n) ? 0 : n;
+   416→}
+   417→function truthy(v: CellVal): boolean {
+   418→  if (v === null) return false;
+   419→  if (typeof v === "number") return v !== 0;
+   420→  return v !== "" && v !== "false";
+   421→}
+   422→function likeMatch(val: CellVal, pattern: string): boolean {
+   423→  const s = String(val ?? "").toLowerCase();
+   424→  const p = pattern.toLowerCase();
+   425→  const rx = new RegExp("^" + p.split("%").map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
+   426→  return rx.test(s);
+   427→}
+   428→
+   429→function evalExpr(e: Expr, env: Env, group?: Row[]): CellVal {
+   430→  switch (e.type) {
+   431→    case "num": return e.v;
+   432→    case "str": return e.v;
+   433→    case "star": return 1;
+   434→    case "col": {
+   435→      const { found, value } = env.get(e.table, e.name);
+   436→      return found ? value : null;
+   437→    }
+   438→    case "bin": {
+   439→      if (e.op === "AND") return truthy(evalExpr(e.l, env, group)) && truthy(evalExpr(e.r, env, group)) ? 1 : 0;
+   440→      if (e.op === "OR") return truthy(evalExpr(e.l, env, group)) || truthy(evalExpr(e.r, env, group)) ? 1 : 0;
+   441→      const l = evalExpr(e.l, env, group);
+   442→      const r = evalExpr(e.r, env, group);
+   443→      switch (e.op) {
+   444→        case "+": return num(l) + num(r);
+   445→        case "-": return num(l) - num(r);
+   446→        case "*": return num(l) * num(r);
+   447→        case "/": return num(r) === 0 ? null : num(l) / num(r);
+   448→        case "=": return l === r ? 1 : 0;
+   449→        case "!=": return l !== r ? 1 : 0;
+   450→        case ">": return num(l) > num(r) ? 1 : 0;
+   451→        case "<": return num(l) < num(r) ? 1 : 0;
+   452→        case ">=": return num(l) >= num(r) ? 1 : 0;
+   453→        case "<=": return num(l) <= num(r) ? 1 : 0;
+   454→        default: throw new Error(`Unknown operator ${e.op}`);
+   455→      }
+   456→    }
+   457→    case "func": {
+   458→      const a = e.args.map((x) => evalExpr(x, env, group));
+   459→      switch (e.name) {
+   460→        case "UPPER": return String(a[0] ?? "").toUpperCase();
+   461→        case "LOWER": return String(a[0] ?? "").toLowerCase();
+   462→        case "ABS": return Math.abs(num(a[0]));
+   463→        case "ROUND": return +num(a[0]).toFixed(a[1] !== undefined ? num(a[1]) : 0);
+   464→        case "LENGTH": return String(a[0] ?? "").length;
+   465→        case "COALESCE": return a.find((x) => x !== null && x !== "") ?? null;
+   466→        case "SUBSTR":
+   467→        case "SUBSTRING": {
+   468→          const s = String(a[0] ?? "");
+   469→          const start = num(a[1]);
+   470→          const len = a[2] !== undefined ? num(a[2]) : undefined;
+   471→          const from = start > 0 ? start - 1 : Math.max(0, s.length + start);
+   472→          return len !== undefined ? s.slice(from, from + len) : s.slice(from);
+   473→        }
+   474→        case "TRIM": return String(a[0] ?? "").trim();
+   475→        case "JULIANDAY": {
+   476→          const s = String(a[0] ?? "");
+   477→          const ms = Date.parse(s.length === 10 ? `${s}T00:00:00Z` : s);
+   478→          return isNaN(ms) ? null : Math.round(ms / 86400000);
+   479→        }
+   480→        case "CAST_INT":
+   481→        case "CAST_INTEGER": {
+   482→          const n = parseInt(String(a[0] ?? ""), 10);
+   483→          return isNaN(n) ? null : n;
+   484→        }
+   485→        case "CAST_REAL":
+   486→        case "CAST_FLOAT":
+   487→        case "CAST_NUMERIC": {
+   488→          const n = parseFloat(String(a[0] ?? "").replace(/[,$]/g, ""));
+   489→          return isNaN(n) ? null : n;
+   490→        }
+   491→        case "CAST_TEXT":
+   492→        case "CAST_VARCHAR": return a[0] === null ? null : String(a[0]);
+   493→        case "CAST_DATE": return a[0];
+   494→        case "CAST": return a[0];
+   495→        default: throw new Error(`Unknown function ${e.name}`);
+   496→      }
+   497→    }
+   498→    case "agg": {
+   499→      if (!group) throw new Error(`${e.name}() used outside GROUP BY context`);
+   500→      const vals: CellVal[] = [];
+   501→      for (const row of group) {
+   502→        if (e.arg.type === "star") { vals.push(1); continue; }
+   503→        const v = evalExpr(e.arg, env, undefined);
+   504→        if (v !== null && v !== "") vals.push(v);
+   505→      }
+   506→      switch (e.name) {
+   507→        case "COUNT": {
+   508→          if (e.arg.type === "star") return group.length;
+   509→          return e.distinct ? new Set(vals).size : vals.length;
+   510→        }
+   511→        case "SUM": return vals.reduce((s, v) => s + num(v), 0);
+   512→        case "AVG": return vals.length ? vals.reduce((s, v) => s + num(v), 0) / vals.length : null;
+   513→        case "MIN": return vals.length ? vals.reduce((m, v) => (num(v) < num(m) ? v : m)) : null;
+   514→        case "MAX": return vals.length ? vals.reduce((m, v) => (num(v) > num(m) ? v : m)) : null;
+   515→        default: throw new Error(`Unknown aggregate ${e.name}`);
+   516→      }
+   517→    }
+   518→    case "case": {
+   519→      for (const w of e.whens) {
+   520→        if (truthy(evalExpr(w.cond, env, group))) return evalExpr(w.val, env, group);
+   521→      }
+   522→      return e.else ? evalExpr(e.else, env, group) : null;
+   523→    }
+   524→    case "in": {
+   525→      const v = evalExpr(e.e, env, group);
+   526→      const hit = e.list.some((x) => evalExpr(x, env, group) === v);
+   527→      return (e.not ? !hit : hit) ? 1 : 0;
+   528→    }
+   529→    case "like": {
+   530→      const v = evalExpr(e.e, env, group);
+   531→      const hit = likeMatch(v, e.pattern);
+   532→      return (e.not ? !hit : hit) ? 1 : 0;
+   533→    }
+   534→    case "isnull": {
+   535→      const v = evalExpr(e.e, env, group);
+   536→      const isN = v === null || v === "";
+   537→      return (e.not ? !isN : isN) ? 1 : 0;
+   538→    }
+   539→    case "between": {
+   540→      const v = num(evalExpr(e.e, env, group));
+   541→      const lo = num(evalExpr(e.lo, env, group));
+   542→      const hi = num(evalExpr(e.hi, env, group));
+   543→      const hit = v >= lo && v <= hi;
+   544→      return (e.not ? !hit : hit) ? 1 : 0;
+   545→    }
+   546→  }
+   547→}
+   548→
+   549→/* ---------- executor ---------- */
+   550→export interface SqlResult {
+   551→  columns: string[];
+   552→  rows: CellVal[][];
+   553→  ms: number;
+   554→}
+   555→
+   556→function makeEnv(rows: { tables: string[]; row: Row }[]): Env {
+   557→  return {
+   558→    get(table, name) {
+   559→      const nl = name.toLowerCase();
+   560→      for (const r of rows) {
+   561→        if (table && !r.tables.includes(table)) continue;
+   562→        for (const k of Object.keys(r.row)) {
+   563→          if (k.toLowerCase() === nl) return { found: true, value: r.row[k] as CellVal };
+   564→        }
+   565→      }
+   566→      return { found: false, value: null };
+   567→    },
+   568→  };
+   569→}
+   570→
+   571→function labelOf(e: Expr, alias?: string): string {
+   572→  if (alias) return alias;
+   573→  if (e.type === "col") return e.name;
+   574→  if (e.type === "agg") {
+   575→    const inner = e.arg.type === "star" ? "*" : (e.arg as ColRef).name ?? "expr";
+   576→    return `${e.name}(${inner})`;
+   577→  }
+   578→  if (e.type === "func") return `${e.name.toLowerCase()}(...)`;
+   579→  if (e.type === "bin") return "expr";
+   580→  if (e.type === "num") return String(e.v);
+   581→  if (e.type === "str") return e.v;
+   582→  return "expr";
+   583→}
+   584→
+   585→export function runSql(sql: string, tables: Record<string, { rows: Row[] }>): SqlResult {
+   586→  const t0 = performance.now();
+   587→  const q = new Parser(lex(sql)).parseQuery();
+   588→
+   589→  // Materialize CTEs in order — each can reference previous ones.
+   590→  const scope: Record<string, { rows: Row[] }> = { ...tables };
+   591→  for (const cte of q.ctes) {
+   592→    const res = execQuery(cte.query, scope);
+   593→    scope[cte.name] = {
+   594→      rows: res.rows.map((vals) =>
+   595→        Object.fromEntries(res.columns.map((c, i) => [c, vals[i]])) as Row
+   596→      ),
+   597→    };
+   598→  }
+   599→  const result = execQuery(q, scope);
+   600→  return { ...result, ms: +(performance.now() - t0).toFixed(1) };
+   601→}
+   602→
+   603→function execQuery(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult {
+   604→  const fromTable = tables[q.from];
+   605→  if (!fromTable) throw new Error(`Table '${q.from}' does not exist`);
+   606→
+   607→  type Tagged = { tables: string[]; row: Row };
+   608→  let working: Tagged[][] = fromTable.rows.map((row) => [
+   609→    { tables: [q.from, q.fromAlias].filter(Boolean) as string[], row },
+   610→  ]);
+   611→
+   612→  for (const j of q.joins) {
+   613→    const jt = tables[j.table];
+   614→    if (!jt) throw new Error(`Table '${j.table}' does not exist`);
+   615→    const out: Tagged[][] = [];
+   616→    for (const left of working) {
+   617→      let matched = false;
+   618→      for (const r of jt.rows) {
+   619→        const combined = [...left, { tables: [j.table, j.alias].filter(Boolean) as string[], row: r }];
+   620→        const env = makeEnv(combined);
+   621→        if (truthy(evalExpr(j.on, env))) {
+   622→          out.push(combined);
+   623→          matched = true;
+   624→        }
+   625→      }
+   626→      if (!matched && j.kind === "left") out.push([...left, { tables: [j.table, j.alias].filter(Boolean) as string[], row: {} }]);
+   627→    }
+   628→    working = out;
+   629→  }
+   630→
+   631→  if (q.where) {
+   632→    working = working.filter((combo) => truthy(evalExpr(q.where!, makeEnv(combo))));
+   633→  }
+   634→
+   635→  const hasAgg = (e: Expr): boolean => {
+   636→    switch (e.type) {
+   637→      case "agg": return true;
+   638→      case "bin": return hasAgg(e.l) || hasAgg(e.r);
+   639→      case "func": return e.args.some(hasAgg);
+   640→      case "in": return hasAgg(e.e) || e.list.some(hasAgg);
+   641→      case "like": return hasAgg(e.e);
+   642→      case "isnull": return hasAgg(e.e);
+   643→      case "between": return hasAgg(e.e) || hasAgg(e.lo) || hasAgg(e.hi);
+   644→      default: return false;
+   645→    }
+   646→  };
+   647→  const grouped = q.groupBy.length > 0 || q.items.some((it) => hasAgg(it.expr)) || (q.having && hasAgg(q.having));
+   648→
+   649→  // Expand bare SELECT * into all columns of the source
+   650→  if (q.items.length === 1 && q.items[0].expr.type === "star") {
+   651→    const colSet: string[] = [];
+   652→    for (const combo of working.slice(0, 1))
+   653→      for (const t of combo)
+   654→        for (const k of Object.keys(t.row))
+   655→          if (!colSet.some((c) => c.toLowerCase() === k.toLowerCase())) colSet.push(k);
+   656→    if (colSet.length)
+   657→      q.items = colSet.map((k) => ({ expr: { type: "col", name: k } as Expr }));
+   658→  }
+   659→
+   660→  interface OutRow { vals: CellVal[]; labels: string[]; src: Tagged[] }
+   661→  let outRows: OutRow[] = [];
+   662→
+   663→  if (grouped) {
+   664→    // A bucket = one group = a list of combos (Tagged[]), so the map value is Tagged[][].
+   665→    const buckets = new Map<string, Tagged[][]>();
+   666→    if (q.groupBy.length === 0) {
+   667→      buckets.set("*", working);
+   668→    } else {
+   669→      for (const combo of working) {
+   670→        const env = makeEnv(combo);
+   671→        const key = q.groupBy.map((g) => String(evalExpr(g, env))).join("\u0001");
+   672→        if (!buckets.has(key)) buckets.set(key, []);
+   673→        buckets.get(key)!.push(combo);
+   674→      }
+   675→    }
+   676→    for (const [, combos] of buckets) {
+   677→      const group: Tagged[] = combos.flat();
+   678→      if (q.having) {
+   679→        if (!truthy(evalExpr(q.having, makeEnv(group), group))) continue;
+   680→      }
+   681→      const env = makeEnv(group);
+   682→      const vals = q.items.map((it) => evalExpr(it.expr, env, group));
+   683→      const labels = q.items.map((it) => labelOf(it.expr, it.alias));
+   684→      outRows.push({ vals, labels, src: group });
+   685→    }
+   686→  } else {
+   687→    for (const combo of working) {
+   688→      const env = makeEnv(combo);
+   689→      const vals = q.items.map((it) => evalExpr(it.expr, env));
+   690→      const labels = q.items.map((it) => labelOf(it.expr, it.alias));
+   691→      outRows.push({ vals, labels, src: combo });
+   692→    }
+   693→  }
+   694→
+   695→  if (q.distinct) {
+   696→    const seen = new Set<string>();
+   697→    outRows = outRows.filter((r) => {
+   698→      const k = r.vals.map((v) => String(v)).join("\u0001");
+   699→      if (seen.has(k)) return false;
+   700→      seen.add(k);
+   701→      return true;
+   702→    });
+   703→  }
+   704→
+   705→  let columns = outRows[0]?.labels ?? q.items.map((it) => labelOf(it.expr, it.alias));
+   706→  // de-dup column names
+   707→  const seenCols = new Map<string, number>();
+   708→  columns = columns.map((c) => {
+   709→    const n = seenCols.get(c) ?? 0;
+   710→    seenCols.set(c, n + 1);
+   711→    return n === 0 ? c : `${c}_${n + 1}`;
+   712→  });
+   713→
+   714→  if (q.orderBy.length) {
+   715→    const aliasIdx = (name: string) => columns.findIndex((c) => c.toLowerCase() === name.toLowerCase());
+   716→    outRows.sort((a, b) => {
+   717→      for (const ob of q.orderBy) {
+   718→        let va: CellVal, vb: CellVal;
+   719→        if (ob.expr.type === "col") {
+   720→          const idx = aliasIdx(ob.expr.name);
+   721→          if (idx >= 0) { va = a.vals[idx]; vb = b.vals[idx]; }
+   722→          else {
+   723→            va = evalExpr(ob.expr, makeEnv(a.src));
+   724→            vb = evalExpr(ob.expr, makeEnv(b.src));
+   725→          }
+   726→        } else {
+   727→          va = evalExpr(ob.expr, makeEnv(a.src), grouped ? a.src : undefined);
+   728→          vb = evalExpr(ob.expr, makeEnv(b.src), grouped ? b.src : undefined);
+   729→        }
+   730→        const na = typeof va === "number" || va === null ? num(va) : NaN;
+   731→        const nb = typeof vb === "number" || vb === null ? num(vb) : NaN;
+   732→        let cmp: number;
+   733→        if (!isNaN(na) && !isNaN(nb)) cmp = na - nb;
+   734→        else cmp = String(va ?? "").localeCompare(String(vb ?? ""));
+   735→        if (cmp !== 0) return cmp * ob.dir;
+   736→      }
+   737→      return 0;
+   738→    });
+   739→  }
+   740→
+   741→  if (q.limit !== undefined) outRows = outRows.slice(0, q.limit);
+   742→
+   743→  return {
+   744→    columns,
+   745→    rows: outRows.map((r) => r.vals.map((v) => (v === undefined ? null : v))),
+   746→    ms: 0,
+   747→  }
+   748→}
+   749→

@@ -1,23 +1,20 @@
 "use client";
 
 /* Excel Studio — spreadsheet with a real formula engine, CSV import/export,
-   sort/dedupe/text ops, stats panel and saved sheets. All client-side, instant. */
+   sort/dedupe/text ops/fill-down, stats panel, saved sheets and a live Coach.
+   All client-side, instant. */
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ToolHeader, PANEL, PANEL_HEAD, fmtNum } from "./shared";
+import { ToolHeader, PANEL, PANEL_HEAD, fmtNum, DatasetPicker, downloadDatasetCSV } from "./shared";
+import { Coach } from "./Coach";
 import { useAcademy } from "@/lib/academy/store";
-import {
-  getAllDatasets, getDatasetById, rowsToCSV, downloadFile, type Row,
-} from "@/lib/academy/datasets";
+import { getDatasetById, downloadFile, type Row } from "@/lib/academy/datasets";
 import Papa from "papaparse";
 import {
-  Database, Download, Eraser, FileSpreadsheet, Save, Sigma, Trash2, Upload, Wand2, FolderOpen,
+  ArrowDownToLine, Database, Download, Eraser, FileSpreadsheet, Save, Sigma, Trash2, Upload, Wand2, FolderOpen,
 } from "lucide-react";
 
 /* ================= formula engine ================= */
@@ -32,7 +29,7 @@ const parseRef = (ref: string): [number, number] | null => {
 };
 
 type Val = string | number;
-type Arg = { kind: "value"; v: Val } | { kind: "range"; values: string[] };
+type Arg = { kind: "value"; v: Val } | { kind: "range"; values: string[]; w: number; h: number };
 
 class FormulaError extends Error {}
 
@@ -112,7 +109,7 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
     ws();
     if (src[pos] === "-") { pos++; return -num(parseUnary()); }
     if (src[pos] === "+") { pos++; return num(parseUnary()); }
-    return parsePrimary();
+    return parsePrimary() as Val;
   }
 
   function parsePrimary(): Val | Arg {
@@ -160,7 +157,7 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
         const ref2Match = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
         if (!ref2Match) throw new FormulaError("#SYNTAX!");
         pos += ref2Match[0].length;
-        return { kind: "range", values: rangeValues(ref, ref2Match[0].toUpperCase(), cells, stack) };
+        return rangeBox(ref, ref2Match[0].toUpperCase(), cells, stack);
       }
       return { kind: "value", v: cellValue(ref, cells, stack) };
     }
@@ -180,7 +177,7 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
         if (m2) {
           const ref2 = /^\s*:\s*(\$?[A-Za-z]\$?\d+)/.exec(after)![1].toUpperCase();
           pos += startRef[0].length + /^\s*:\s*\$?[A-Za-z]\$?\d+/.exec(after)![0].length;
-          return { kind: "range", values: rangeValues(ref, ref2, cells, stack) };
+          return rangeBox(ref, ref2, cells, stack);
         }
       }
     }
@@ -191,7 +188,8 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
   const v = parseExpr();
   ws();
   if (pos < src.length) throw new FormulaError("#SYNTAX!");
-  return v;
+  if (typeof v === "object" && v !== null && "kind" in v) throw new FormulaError("#VALUE!");
+  return v as Val;
 }
 
 function fmtRaw(v: Val): string {
@@ -218,19 +216,19 @@ function cellValue(ref: string, cells: Record<string, string>, stack: Set<string
   const n = parseFloat(raw);
   return isNaN(n) || !/^-?[\d.,$%eE+-]+$/.test(raw) || /[\d]([.,]\d+)*[.,]\D/.test(raw) ? raw : n;
 }
-function rangeValues(a: string, b: string, cells: Record<string, string>, stack: Set<string>): string[] {
+function rangeBox(a: string, b: string, cells: Record<string, string>, stack: Set<string>): Arg {
   const [c1, r1] = parseRef(a)!;
   const [c2, r2] = parseRef(b)!;
   const [cMin, cMax] = [Math.min(c1, c2), Math.max(c1, c2)];
   const [rMin, rMax] = [Math.min(r1, r2), Math.max(r1, r2)];
-  const out: string[] = [];
+  const values: string[] = [];
   for (let r = rMin; r <= rMax; r++)
     for (let c = cMin; c <= cMax; c++)
-      out.push(String(cellValue(refFor(c, r), cells, stack) ?? ""));
-  return out;
+      values.push(String(cellValue(refFor(c, r), cells, stack) ?? ""));
+  return { kind: "range", values, w: cMax - cMin + 1, h: rMax - rMin + 1 };
 }
 
-function callFn(name: string, args: Arg[], ): Val {
+function callFn(name: string, args: Arg[]): Val {
   const flat = (): string[] => {
     const out: string[] = [];
     for (const a of args) {
@@ -242,6 +240,8 @@ function callFn(name: string, args: Arg[], ): Val {
   const numeric = (vals: string[]): number[] =>
     vals.map((v) => parseFloat(String(v ?? "").replace(/[$,\s]/g, ""))).filter((n) => !isNaN(n));
   const nonEmpty = (): string[] => flat().filter((v) => v !== "" && v !== "#CYCLE!");
+  const scalar = (i: number): Val => (args[i]?.kind === "value" ? (args[i] as { v: Val }).v : num(args[i]?.values[0] ?? "0"));
+  const text = (i: number): string => String(scalar(i) ?? "");
 
   switch (name) {
     case "SUM": return numeric(flat()).reduce((s, n) => s + n, 0);
@@ -261,29 +261,89 @@ function callFn(name: string, args: Arg[], ): Val {
       const mean = n.reduce((s, x) => s + x, 0) / n.length;
       return Math.sqrt(n.reduce((s, x) => s + (x - mean) ** 2, 0) / (n.length - 1));
     }
+    case "VAR": {
+      const n = numeric(flat());
+      if (n.length < 2) return 0;
+      const mean = n.reduce((s, x) => s + x, 0) / n.length;
+      return n.reduce((s, x) => s + (x - mean) ** 2, 0) / (n.length - 1);
+    }
     case "COUNT": return numeric(flat()).length;
     case "COUNTA": return nonEmpty().length;
+    case "COUNTBLANK": {
+      const a = args[0];
+      if (!a) return 0;
+      const vals = a.kind === "range" ? a.values : [String(a.v)];
+      return vals.filter((v) => v === "").length;
+    }
     case "MIN": { const n = numeric(flat()); return n.length ? Math.min(...n) : 0; }
     case "MAX": { const n = numeric(flat()); return n.length ? Math.max(...n) : 0; }
     case "ROUND": {
-      const a = args.map((x) => (x.kind === "value" ? x.v : num(x.values[0] ?? "0")));
-      const d = a.length > 1 ? num(a[1]) : 0;
-      return +num(a[0]).toFixed(d);
+      const d = args.length > 1 ? num(scalar(1)) : 0;
+      return +num(scalar(0)).toFixed(d);
     }
-    case "ABS": return Math.abs(num(args[0].kind === "value" ? args[0].v : num(args[0].values[0] ?? "0")));
+    case "INT": return Math.floor(num(scalar(0)));
+    case "MOD": return num(scalar(0)) % num(scalar(1));
+    case "SQRT": return Math.sqrt(Math.abs(num(scalar(0))));
+    case "POWER": return Math.pow(num(scalar(0)), num(scalar(1)));
+    case "ABS": return Math.abs(num(scalar(0)));
+    case "CONCAT":
+    case "CONCATENATE": {
+      let s = "";
+      for (const a of args) {
+        if (a.kind === "range") s += a.values.filter((v) => v !== "").join("");
+        else s += fmtRaw(a.v);
+      }
+      return s;
+    }
+    case "VLOOKUP": {
+      const lookup = scalar(0);
+      const rng = args[1];
+      if (!rng || rng.kind !== "range") throw new FormulaError("#VALUE!");
+      const colIdx = Math.round(num(scalar(2)));
+      if (colIdx < 1 || colIdx > rng.w) throw new FormulaError("#REF!");
+      const lk = typeof lookup === "number" ? lookup : String(lookup).trim().toLowerCase();
+      for (let r = 0; r < rng.h; r++) {
+        const key = rng.values[r * rng.w];
+        const keyN = typeof lookup === "number" ? parseFloat(String(key).replace(/[$,\s]/g, "")) : NaN;
+        const match = typeof lookup === "number"
+          ? !isNaN(keyN) && keyN === lookup
+          : String(key).trim().toLowerCase() === lk;
+        if (match) {
+          const out = rng.values[r * rng.w + (colIdx - 1)];
+          const outN = parseFloat(String(out).replace(/[$,\s]/g, ""));
+          return isNaN(outN) || out === "" ? out : outN;
+        }
+      }
+      throw new FormulaError("#N/A");
+    }
     case "IF": {
-      const cond = args[0].kind === "value" ? args[0].v : num(args[0].values[0] ?? "0");
+      const cond = scalar(0);
       const yes = args[1]?.kind === "value" ? args[1].v : args[1]?.values[0] ?? "";
       const no = args[2]?.kind === "value" ? args[2].v : args[2]?.values[0] ?? "";
       const truthy = typeof cond === "number" ? cond !== 0 : String(cond).toUpperCase() === "TRUE" || (String(cond) !== "" && String(cond) !== "FALSE");
       return truthy ? yes : no;
     }
-    case "AND": return args.every((a) => (typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() !== "FALSE" && a.v !== "")) ? 1 : 0;
-    case "OR": return args.some((a) => (typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() === "TRUE")) ? 1 : 0;
-    case "UPPER": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").toUpperCase();
-    case "LOWER": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").toLowerCase();
-    case "TRIM": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").trim();
-    case "LEN": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").length;
+    case "AND": return args.every((a) => (a.kind === "value" ? typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() !== "FALSE" && a.v !== "" : a.values.some((x) => x !== ""))) ? 1 : 0;
+    case "OR": return args.some((a) => (a.kind === "value" ? typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() === "TRUE" : a.values.some((x) => x !== ""))) ? 1 : 0;
+    case "NOT": return num(scalar(0)) === 0 ? 1 : 0;
+    case "UPPER": return text(0).toUpperCase();
+    case "LOWER": return text(0).toLowerCase();
+    case "PROPER": return text(0).toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
+    case "TRIM": return text(0).trim();
+    case "LEN": return text(0).length;
+    case "LEFT": return text(0).slice(0, args.length > 1 ? Math.round(num(scalar(1))) : 1);
+    case "RIGHT": { const n = args.length > 1 ? Math.round(num(scalar(1))) : 1; return text(0).slice(-n || undefined); }
+    case "MID": return text(0).slice(Math.round(num(scalar(1))) - 1, Math.round(num(scalar(1))) - 1 + Math.round(num(scalar(2))));
+    case "VALUE": return num(scalar(0));
+    case "TEXTJOIN": {
+      const sep = text(0);
+      const parts: string[] = [];
+      for (const a of args.slice(2)) {
+        if (a.kind === "range") parts.push(...a.values.filter((v) => v !== ""));
+        else if (String(a.v) !== "") parts.push(String(a.v));
+      }
+      return parts.join(sep);
+    }
     case "SUMIF":
     case "COUNTIF": {
       const rangeArg = args[0];
@@ -358,6 +418,16 @@ function usedRange(cells: Record<string, string>): { rows: number; cols: number 
 }
 
 /* ================= component ================= */
+const EXCEL_MISSION = [
+  { id: "load", label: "Load a sample file", detail: "Use the **data picker** to load *Retail Sales 2025 (Clean)* — or import your own CSV. Columns become A, B, C…" },
+  { id: "formula", label: "Write your first formula", detail: "Click an empty cell, type ~ =SUM(K2:K100) ~ and press Enter. Every formula starts with **=**." },
+  { id: "stats", label: "Profile a column", detail: "Click a **column header** (like J) — the stats panel instantly shows sum, mean, median and spread." },
+  { id: "logic", label: "Use conditional logic", detail: "Try ~ =SUMIF(F:F,\"North\",K:K) ~, ~ =COUNTIF(J:J,\">500\") ~ or ~ =IF(J2>1000,\"Big\",\"Small\") ~." },
+  { id: "lookup", label: "Look up a value", detail: "VLOOKUP finds a match in a table: ~ =VLOOKUP(\"Office Chair\",G2:H21,2,FALSE) ~ returns its price." },
+  { id: "clean", label: "Clean the sheet", detail: "Sort A→Z, remove duplicate rows, fix text case with the Trim / Upper / Lower buttons." },
+  { id: "ship", label: "Save & export", detail: "Name the sheet and **Save** (it persists), then **Export CSV** to get a file for your portfolio." },
+];
+
 export function ExcelTool() {
   const { sheets, saveSheet, deleteSheet } = useAcademy();
   const [cells, setCells] = React.useState<Record<string, string>>({});
@@ -365,6 +435,7 @@ export function ExcelTool() {
   const [editVal, setEditVal] = React.useState<string | null>(null);
   const [sheetName, setSheetName] = React.useState("");
   const [selectedCol, setSelectedCol] = React.useState(0);
+  const [loadedInfo, setLoadedInfo] = React.useState<string | null>(null);
   const gridRef = React.useRef<HTMLDivElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -410,18 +481,24 @@ export function ExcelTool() {
   };
 
   const loadDataset = (id: string) => {
-    const ds = id === "messy_sales" ? getDatasetById("messy_sales")! : getAllDatasets().find((d) => d.id === id);
+    const ds = getDatasetById(id);
     if (!ds) return;
     const next: Record<string, string> = {};
-    ds.columns.forEach((col, ci) => { next[refFor(ci, 0)] = col.name; });
-    ds.rows.slice(0, 150).forEach((row: Row, ri) => {
-      ds.columns.forEach((col, ci) => {
+    ds.columns.slice(0, COLS).forEach((col, ci) => { next[refFor(ci, 0)] = col.name; });
+    ds.rows.slice(0, ROWS - 1).forEach((row: Row, ri) => {
+      ds.columns.slice(0, COLS).forEach((col, ci) => {
         const v = row[col.key];
         if (v !== undefined && v !== "") next[refFor(ci, ri + 1)] = String(v);
       });
     });
     setCells(next);
     setActive("A1");
+    setSelectedCol(0);
+    setLoadedInfo(
+      ds.rows.length > ROWS - 1
+        ? `${ds.name}: showing the first ${ROWS - 1} of ${ds.rows.length.toLocaleString()} rows (grid limit). Use the Cleaner or download the CSV for the full file.`
+        : `${ds.name}: ${ds.rows.length.toLocaleString()} rows loaded.`
+    );
   };
 
   const importCSV = (file: File) => {
@@ -430,13 +507,14 @@ export function ExcelTool() {
       skipEmptyLines: true,
       complete: (res) => {
         const next: Record<string, string> = {};
-        res.data.slice(0, 200).forEach((row, ri) => {
-          (row as string[]).slice(0, COLS).forEach((v, ci) => {
+        res.data.slice(0, ROWS).forEach((row, ri) => {
+          (row as unknown as string[]).slice(0, COLS).forEach((v, ci) => {
             if (v !== "") next[refFor(ci, ri)] = String(v);
           });
         });
         setCells(next);
         setActive("A1");
+        setLoadedInfo(`Imported ${file.name}: ${Math.min(res.data.length, ROWS)} rows.`);
       },
     });
   };
@@ -499,12 +577,22 @@ export function ExcelTool() {
     if (removed > 0) gridRef.current?.focus();
   };
 
+  const fillDown = () => {
+    const [c, r] = parseRef(active)!;
+    const src = cells[active] ?? "";
+    if (!src || r < 1) return;
+    const next = { ...cells };
+    for (let rr = r + 1; rr < usedR; rr++) next[refFor(c, rr)] = src;
+    setCells(next);
+  };
+
   const colStats = React.useMemo(() => {
     const stats: { n: number; sum: number; mean: number; median: number; std: number; min: number; max: number } | null = (() => {
       const vals: number[] = [];
       for (let r = 0; r < usedR; r++) {
-        const v = parseFloat(String(displayValue(refFor(selectedCol, r), cells)).replace(/[$,\s]/g, ""));
-        if (!isNaN(v) && String(displayValue(refFor(selectedCol, r), cells)) !== "") vals.push(v);
+        const raw = displayValue(refFor(selectedCol, r), cells);
+        const v = parseFloat(raw.replace(/[$,\s]/g, ""));
+        if (!isNaN(v) && raw !== "") vals.push(v);
       }
       if (vals.length < 1) return null;
       const sorted = [...vals].sort((a, b) => a - b);
@@ -533,38 +621,52 @@ export function ExcelTool() {
   };
 
   const activeRaw = cells[active] ?? "";
-  const [ac, ar] = parseRef(active)!;
+  const formulaCount = Object.values(cells).filter((v) => v.startsWith("=")).length;
+
+  /* dynamic coach tips */
+  const tips: string[] = React.useMemo(() => {
+    const t: string[] = [];
+    if (usedR <= 1) {
+      t.push("The sheet is empty. Load a sample file from the picker above — try **Retail Sales 2025 (Clean)** first.");
+    } else {
+      if (formulaCount === 0) t.push("You have data but no formulas yet. Click an empty cell under the last column and type ~ =SUM(K2:K50) ~ — then press Enter.");
+      else if (formulaCount < 3) t.push(`Nice — ${formulaCount} formula${formulaCount > 1 ? "s" : ""} so far. Try dragging the logic down with **Fill down** or write ~ =IF(J2>500,\"High\",\"Low\") ~.`);
+      if (colStats && colStats.n > 5) {
+        const skew = Math.abs(colStats.mean - colStats.median) / Math.max(1, Math.abs(colStats.median));
+        t.push(skew > 0.25
+          ? `Column ${colName(selectedCol)} is skewed (mean ${fmtNum(colStats.mean)} vs median ${fmtNum(colStats.median)}). In reports, quote the **median**.`
+          : `Column ${colName(selectedCol)} is fairly symmetric — the mean ${fmtNum(colStats.mean)} is a safe summary.`);
+      }
+      t.push("Press **Enter** to move down, **Tab** to move right, **F2-style** double-click to edit a cell. Formulas update instantly when you change inputs.");
+    }
+    return t.slice(0, 3);
+  }, [usedR, formulaCount, colStats, selectedCol]);
 
   return (
     <div className="space-y-4">
       <ToolHeader
-        icon={<FileSpreadsheet className="h-5 w-5 text-emerald-400" />}
+        icon={<FileSpreadsheet className="h-5 w-5 text-emerald-500 dark:text-emerald-400" />}
         title="Excel Studio"
-        subtitle="Full spreadsheet with formula engine — SUM to SUMIF, stats, sort, dedupe, CSV in/out"
+        subtitle="Full spreadsheet with a real formula engine — SUM to VLOOKUP, stats, sort, dedupe, CSV in/out"
         actions={
           <>
-            <Select onValueChange={(v) => loadDataset(v)}>
-              <SelectTrigger className="w-[190px] border-white/15 bg-zinc-900 text-sm"><Database className="mr-1 h-4 w-4 text-emerald-400" /><SelectValue placeholder="Load sample data…" /></SelectTrigger>
-              <SelectContent className="border-white/10 bg-zinc-900">
-                {getAllDatasets().map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
-                <SelectItem value="messy_sales">Retail Sales H2-2024 (Messy)</SelectItem>
-              </SelectContent>
-            </Select>
+            <DatasetPicker onPick={loadDataset} />
+            {loadedInfo && <span className="hidden max-w-[260px] truncate text-[11px] text-muted-foreground lg:inline" title={loadedInfo}>{loadedInfo}</span>}
             <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} />
-            <Button variant="outline" size="sm" className="border-white/15 bg-transparent hover:bg-white/10" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" /> Import CSV</Button>
-            <Button variant="outline" size="sm" className="border-white/15 bg-transparent hover:bg-white/10" onClick={exportCSV}><Download className="h-4 w-4" /> Export CSV</Button>
+            <Button variant="outline" size="sm" className="border-border" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" /> Import CSV</Button>
+            <Button variant="outline" size="sm" className="border-border" onClick={exportCSV}><Download className="h-4 w-4" /> Export CSV</Button>
           </>
         }
       />
 
       {/* formula bar */}
       <div className="flex items-center gap-2">
-        <div className="flex h-9 w-20 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-black/40 font-mono text-sm font-bold text-emerald-300">{active}</div>
-        <div className="flex h-9 flex-1 items-center rounded-lg border border-white/15 bg-black/40 px-3 font-mono text-sm text-zinc-200">
-          <Sigma className="mr-2 h-3.5 w-3.5 shrink-0 text-zinc-500" />
+        <div className="flex h-9 w-20 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 font-mono text-sm font-bold text-emerald-700 dark:text-emerald-300">{active}</div>
+        <div className="flex h-9 flex-1 items-center rounded-lg border border-border bg-muted/50 px-3 font-mono text-sm text-foreground">
+          <Sigma className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <input
-            className="w-full bg-transparent outline-none placeholder:text-zinc-600"
-            placeholder="Type a value or =SUM(A1:A50)  ·  =IF(A2>100,&quot;Big&quot;,&quot;Small&quot;)"
+            className="w-full bg-transparent outline-none placeholder:text-muted-foreground/50"
+            placeholder='Type a value or =SUM(A1:A50)  ·  =VLOOKUP("Office Chair",G2:H21,2)'
             value={editVal ?? activeRaw}
             onChange={(e) => setEditVal(e.target.value)}
             onKeyDown={(e) => {
@@ -578,32 +680,40 @@ export function ExcelTool() {
 
       {/* toolbar */}
       <div className={`${PANEL} flex flex-wrap items-center gap-1.5 px-2 py-1.5 text-xs`}>
-        <span className="px-1 text-zinc-500">Sort col {colName(selectedCol)}:</span>
+        <span className="px-1 text-muted-foreground">Sort col {colName(selectedCol)}:</span>
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, 1)}>A→Z</Button>
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, -1)}>Z→A</Button>
-        <span className="mx-1 h-4 w-px bg-white/10" />
+        <span className="mx-1 h-4 w-px bg-border" />
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={fillDown}><ArrowDownToLine className="mr-1 h-3 w-3" />Fill down</Button>
+            </TooltipTrigger>
+            <TooltipContent>Copies the active cell down to the end of the data — great for repeating a formula</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={dedupeRows}><Eraser className="mr-1 h-3 w-3" />Remove duplicate rows</Button>
-        <span className="mx-1 h-4 w-px bg-white/10" />
-        <span className="px-1 text-zinc-500">Text col {colName(selectedCol)}:</span>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <span className="px-1 text-muted-foreground">Text col {colName(selectedCol)}:</span>
         {(["trim", "upper", "lower", "title"] as const).map((m) => (
           <Button key={m} variant="ghost" size="sm" className="h-7 px-2 text-xs capitalize" onClick={() => transformCol(m)}><Wand2 className="mr-1 h-3 w-3" />{m}</Button>
         ))}
-        <span className="mx-1 h-4 w-px bg-white/10" />
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-300 hover:bg-red-500/10" onClick={() => setCells({})}><Trash2 className="mr-1 h-3 w-3" />Clear sheet</Button>
+        <span className="mx-1 h-4 w-px bg-border" />
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-600 hover:bg-red-500/10 dark:text-red-300" onClick={() => { setCells({}); setLoadedInfo(null); }}><Trash2 className="mr-1 h-3 w-3" />Clear sheet</Button>
         <span className="ml-auto flex items-center gap-1.5">
-          <Input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="Sheet name" className="h-7 w-28 border-white/15 bg-black/30 text-xs" />
-          <Button variant="outline" size="sm" className="h-7 border-white/15 px-2 text-xs" onClick={() => sheetName && saveSheet(sheetName, cells)}><Save className="h-3 w-3" /> Save</Button>
+          <Input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="Sheet name" className="h-7 w-28 border-border bg-background/60 text-xs" />
+          <Button variant="outline" size="sm" className="h-7 border-border px-2 text-xs" onClick={() => sheetName && saveSheet(sheetName, cells)}><Save className="h-3 w-3" /> Save</Button>
           {Object.keys(sheets).length > 0 && (
-            <Select onValueChange={(v) => { setCells(sheets[v].cells); setSheetName(v); }}>
-              <SelectTrigger className="h-7 w-[130px] border-white/15 bg-zinc-900 text-xs"><FolderOpen className="mr-1 h-3 w-3 text-emerald-400" /><SelectValue placeholder="Open saved…" /></SelectTrigger>
-              <SelectContent className="border-white/10 bg-zinc-900">
-                {Object.values(sheets).map((s) => (
-                  <SelectItem key={s.name} value={s.name}>
-                    <span className="flex items-center justify-between gap-2"><span>{s.name}</span><span className="text-[10px] text-zinc-500">{new Date(s.savedAt).toLocaleDateString()}</span></span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <select
+              className="h-7 rounded-md border border-border bg-card px-1.5 text-xs text-foreground"
+              onChange={(e) => { const v = e.target.value; if (v && sheets[v]) { setCells(sheets[v].cells); setSheetName(v); } }}
+              value=""
+            >
+              <option value="" disabled>Open saved…</option>
+              {Object.values(sheets).map((s) => (
+                <option key={s.name} value={s.name}>{s.name} · {new Date(s.savedAt).toLocaleDateString()}</option>
+              ))}
+            </select>
           )}
         </span>
       </div>
@@ -618,14 +728,16 @@ export function ExcelTool() {
         >
           <table className="border-collapse text-[13px]" style={{ minWidth: viewCols * 96 }}>
             <thead>
-              <tr className="sticky top-0 z-10 bg-zinc-900">
-                <th className="sticky left-0 z-20 w-10 border-b border-r border-white/10 bg-zinc-900 px-1 py-1.5 text-[10px] font-medium text-zinc-500" />
+              <tr className="sticky top-0 z-10 bg-card">
+                <th className="sticky left-0 z-20 w-10 border-b border-r border-border bg-card px-1 py-1.5 text-[10px] font-medium text-muted-foreground" />
                 {Array.from({ length: viewCols }, (_, c) => (
                   <th
                     key={c}
                     onClick={() => setSelectedCol(c)}
-                    className={`cursor-pointer border-b border-r border-white/10 px-2 py-1.5 text-[11px] font-semibold transition-colors ${
-                      selectedCol === c ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-900 text-zinc-500 hover:bg-white/5"
+                    className={`cursor-pointer border-b border-r border-border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                      selectedCol === c
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : "bg-card text-muted-foreground hover:bg-muted"
                     }`}
                   >
                     {colName(c)}
@@ -636,7 +748,7 @@ export function ExcelTool() {
             <tbody>
               {Array.from({ length: viewRows }, (_, r) => (
                 <tr key={r} className="group">
-                  <td className={`sticky left-0 z-10 w-10 border-b border-r border-white/10 bg-zinc-900 px-1 py-1 text-center text-[10px] font-medium ${active.endsWith(String(r + 1)) ? "text-emerald-300" : "text-zinc-500"}`}>{r + 1}</td>
+                  <td className={`sticky left-0 z-10 w-10 border-b border-r border-border bg-card px-1 py-1 text-center text-[10px] font-medium ${active.endsWith(String(r + 1)) ? "text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}`}>{r + 1}</td>
                   {Array.from({ length: viewCols }, (_, c) => {
                     const ref = refFor(c, r);
                     const isA = ref === active;
@@ -649,15 +761,15 @@ export function ExcelTool() {
                         key={c}
                         onClick={() => { if (editVal !== null && isA) return; commit(); setActive(ref); }}
                         onDoubleClick={() => { setActive(ref); startEdit(); }}
-                        className={`relative h-[26px] max-w-[180px] cursor-cell overflow-hidden whitespace-nowrap border-b border-r border-white/[0.06] px-2 py-0.5 text-right transition-colors ${
-                          numeric ? "text-zinc-200" : "text-left text-zinc-300"
-                        } ${isA ? "outline outline-2 -outline-offset-1 outline-emerald-400" : selectedCol === c ? "bg-emerald-500/[0.04]" : "hover:bg-white/[0.03]"}`}
+                        className={`relative h-[26px] max-w-[180px] cursor-cell overflow-hidden whitespace-nowrap border-b border-r border-border/60 px-2 py-0.5 text-right transition-colors ${
+                          numeric ? "text-foreground" : "text-left text-foreground/85"
+                        } ${isA ? "outline outline-2 -outline-offset-1 outline-emerald-500" : selectedCol === c ? "bg-emerald-500/[0.05]" : "hover:bg-muted/40"}`}
                         style={{ minWidth: 96 }}
                       >
                         {isA && editVal !== null ? (
                           <input
                             autoFocus
-                            className="absolute inset-0 z-10 w-full bg-zinc-800 px-2 font-mono text-[12px] text-white outline outline-2 -outline-offset-1 outline-emerald-400"
+                            className="absolute inset-0 z-10 w-full bg-background px-2 font-mono text-[12px] text-foreground outline outline-2 -outline-offset-1 outline-emerald-500"
                             value={editVal}
                             onChange={(e) => setEditVal(e.target.value)}
                             onBlur={commit}
@@ -665,7 +777,7 @@ export function ExcelTool() {
                         ) : (
                           <span className={isFormula ? "italic" : ""}>{disp}</span>
                         )}
-                        {isFormula && <span className="absolute left-0.5 top-0.5 h-1 w-1 rounded-full bg-sky-400/70" />}
+                        {isFormula && <span className="absolute left-0.5 top-0.5 h-1 w-1 rounded-full bg-sky-500/70" />}
                       </td>
                     );
                   })}
@@ -678,7 +790,7 @@ export function ExcelTool() {
         {/* stats + help */}
         <div className="w-full shrink-0 space-y-3 lg:w-72">
           <div className={PANEL}>
-            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Column stats — {colName(selectedCol)}</span></div>
+            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Column stats — {colName(selectedCol)}</span></div>
             <div className="p-3 text-[13px]">
               {colStats ? (
                 <div className="space-y-1.5">
@@ -687,43 +799,60 @@ export function ExcelTool() {
                     ["Median", colStats.median], ["Std dev", colStats.std], ["Min", colStats.min], ["Max", colStats.max],
                   ].map(([k, v]) => (
                     <div key={k as string} className="flex justify-between">
-                      <span className="text-zinc-500">{k as string}</span>
-                      <span className="font-mono text-zinc-200">{fmtNum(v as number)}</span>
+                      <span className="text-muted-foreground">{k as string}</span>
+                      <span className="font-mono text-foreground">{fmtNum(v as number)}</span>
                     </div>
                   ))}
-                  <p className="pt-1 text-[11px] leading-snug text-zinc-500">If mean ≫ median the column is right-skewed — report the median.</p>
+                  <p className="pt-1 text-[11px] leading-snug text-muted-foreground">If mean ≫ median the column is right-skewed — report the median.</p>
                 </div>
               ) : (
-                <p className="text-zinc-500">Select a column with numbers. Try loading sample data first.</p>
+                <p className="text-muted-foreground">Select a column with numbers. Try loading sample data first.</p>
               )}
             </div>
           </div>
           <div className={PANEL}>
-            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Formula cheat-sheet</span></div>
-            <div className="space-y-1 p-3 font-mono text-[11px] leading-relaxed text-zinc-400">
-              <p><span className="text-emerald-300">=SUM(B2:B100)</span> · total</p>
-              <p><span className="text-emerald-300">=AVERAGE / MEDIAN / STDEV</span></p>
-              <p><span className="text-emerald-300">=SUMIF(E:E,"North",J:J)</span></p>
-              <p><span className="text-emerald-300">=COUNTIF(E:E,"&gt;500")</span></p>
-              <p><span className="text-emerald-300">=IF(J2&gt;1000,"Big","Small")</span></p>
-              <p><span className="text-emerald-300">=ROUND(J2/12, 2)</span> · <span className="text-emerald-300">&amp;</span> joins text</p>
+            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Formula cheat-sheet</span></div>
+            <div className="space-y-1 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+              <p><span className="text-emerald-700 dark:text-emerald-300">=SUM(B2:B100)</span> · total</p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=AVERAGE / MEDIAN / STDEV / VAR</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=SUMIF(E:E,"North",J:J)</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=COUNTIF(E:E,"&gt;500")</span> · <span className="text-emerald-700 dark:text-emerald-300">=COUNTBLANK(A:A)</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=VLOOKUP("Desk",G:J,4)</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=IF(J2&gt;1000,"Big","Small")</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=CONCAT(B2," ",C2)</span> · <span className="text-emerald-700 dark:text-emerald-300">=TEXTJOIN(", ",1,A2:A5)</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=ROUND(J2/12, 2)</span> · <span className="text-emerald-700 dark:text-emerald-300">=INT / MOD / ABS / SQRT</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=LEFT / RIGHT / MID / LEN / TRIM</span></p>
             </div>
           </div>
           {Object.keys(sheets).length > 0 && (
             <div className={PANEL}>
-              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Saved sheets</span></div>
+              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Saved sheets</span></div>
               <div className="space-y-1 p-2">
                 {Object.values(sheets).map((s) => (
-                  <div key={s.name} className="flex items-center justify-between rounded-md px-2 py-1 text-xs text-zinc-300 hover:bg-white/5">
+                  <div key={s.name} className="flex items-center justify-between rounded-md px-2 py-1 text-xs text-foreground/85 hover:bg-muted">
                     <button className="flex-1 text-left" onClick={() => { setCells(s.cells); setSheetName(s.name); }}>{s.name}</button>
-                    <button className="text-zinc-500 hover:text-red-400" onClick={() => deleteSheet(s.name)}><Trash2 className="h-3 w-3" /></button>
+                    <button className="text-muted-foreground hover:text-red-500" onClick={() => deleteSheet(s.name)}><Trash2 className="h-3 w-3" /></button>
                   </div>
                 ))}
               </div>
             </div>
           )}
+          <div className={PANEL}>
+            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sample files</span></div>
+            <div className="max-h-52 space-y-0.5 overflow-y-auto p-2 scrollbar-thin">
+              <p className="px-2 pb-1 text-[11px] text-muted-foreground">Download any sample file as CSV to practice importing:</p>
+              {["messy_sales", "ecom_orders", "server_logs", "finance_gl"].map((id) => (
+                <button key={id} className="flex w-full items-center justify-between rounded-md px-2 py-1 text-xs text-foreground/85 hover:bg-muted" onClick={() => downloadDatasetCSV(id)}>
+                  <span className="truncate">{id}</span>
+                  <Database className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
+
+      <Coach view="excel" mission={EXCEL_MISSION} tips={tips} why="Excel is still the #1 tool analysts touch daily. Companies test formula fluency in interviews (SUMIFs, VLOOKUP, IF) because cleaned, well-structured sheets are how estimates, budgets and one-off analyses actually get done — before anything reaches Power BI." />
     </div>
   );
 }

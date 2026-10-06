@@ -1,17 +1,19 @@
 "use client";
 
-/* SQL Playground — real in-browser SQL engine (SELECT/JOIN/GROUP BY/HAVING/ORDER BY),
-   schema browser, results grid, and 10 auto-checked exercises. */
+/* SQL Playground — real in-browser SQL engine (SELECT/JOIN/GROUP BY/HAVING/ORDER BY/CTE),
+   schema browser, results grid with CSV export, query history, quick templates,
+   14 auto-checked exercises and a live Coach. */
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ToolHeader, PANEL, PANEL_HEAD } from "./shared";
-import { getSqlTables } from "@/lib/academy/datasets";
+import { ToolHeader, PANEL, PANEL_HEAD, downloadDatasetCSV } from "./shared";
+import { Coach } from "./Coach";
+import { getSqlTables, getDatasetById, rowsToCSV, downloadFile } from "@/lib/academy/datasets";
 import { runSql } from "@/lib/academy/sql-engine";
 import { useAcademy } from "@/lib/academy/store";
 import {
-  BookOpenCheck, CheckCircle2, ChevronRight, Database, Eye, Play, Table2, Terminal, XCircle,
+  BookOpenCheck, CheckCircle2, ChevronRight, Clock, Database, Download, Eye, Play, Sparkles, Table2, Terminal, XCircle,
 } from "lucide-react";
 
 interface Exercise {
@@ -73,28 +75,80 @@ const EXERCISES: Exercise[] = [
     hint: "WITH revenue AS (...), city AS (...) SELECT ... — build it step by step and test each CTE alone.",
     solution: "WITH rev AS (SELECT o.id AS order_id, o.customer_id, i.quantity * i.unit_price AS line_rev FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.status = 'completed'), city_rev AS (SELECT c.city, SUM(r.line_rev) AS revenue FROM rev r JOIN customers c ON c.id = r.customer_id GROUP BY c.city) SELECT * FROM city_rev ORDER BY revenue DESC LIMIT 3;",
   },
+  {
+    id: 11, title: "CASE WHEN", prompt: "Bucket completed orders by value: '<100' small, '100-1000' medium, '>1000' large (line revenue = quantity × unit_price). Show bucket and order count.",
+    hint: "CASE WHEN x THEN y ELSE z END creates buckets. SUM the line revenue per order first, or bucket each line and count orders via COUNT(DISTINCT o.id).",
+    solution: "SELECT CASE WHEN i.quantity * i.unit_price < 100 THEN '<100' WHEN i.quantity * i.unit_price <= 1000 THEN '100-1000' ELSE '>1000' END AS bucket, COUNT(DISTINCT o.id) AS orders FROM order_items i JOIN orders o ON o.id = i.order_id WHERE o.status = 'completed' GROUP BY bucket ORDER BY orders DESC;",
+  },
+  {
+    id: 12, title: "IN + DISTINCT", prompt: "Which distinct cities do Enterprise-segment customers come from? Sort alphabetically.",
+    hint: "DISTINCT removes duplicates. WHERE segment = 'Enterprise' filters first.",
+    solution: "SELECT DISTINCT city FROM customers WHERE segment = 'Enterprise' ORDER BY city;",
+  },
+  {
+    id: 13, title: "Self JOIN — managers", prompt: "List each employee with their manager's name: e.name AS employee, m.name AS manager. Employees with manager_id NULL get manager NULL.",
+    hint: "JOIN employees m ON e.manager_id = m.id — the same table twice with different aliases.",
+    solution: "SELECT e.name AS employee, m.name AS manager FROM employees e LEFT JOIN employees m ON e.manager_id = m.id ORDER BY employee LIMIT 32;",
+  },
+  {
+    id: 14, title: "Avg order value by segment", prompt: "Completed revenue per customer segment: join orders → customers → order_items, group by segment, show revenue and orders, revenue descending.",
+    hint: "Three tables: orders o, customers c, order_items i. Revenue = SUM(quantity × unit_price), orders = COUNT(DISTINCT o.id).",
+    solution: "SELECT c.segment, SUM(i.quantity * i.unit_price) AS revenue, COUNT(DISTINCT o.id) AS orders FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_items i ON i.order_id = o.id WHERE o.status = 'completed' GROUP BY c.segment ORDER BY revenue DESC;",
+  },
 ];
+
+const TEMPLATES: { name: string; sql: string }[] = [
+  { name: "Monthly revenue trend", sql: "SELECT substr(o.order_date, 1, 7) AS month,\n       SUM(i.quantity * i.unit_price) AS revenue\nFROM orders o\nJOIN order_items i ON i.order_id = o.id\nWHERE o.status = 'completed'\nGROUP BY month\nORDER BY month;" },
+  { name: "Top customers by spend", sql: "SELECT c.name, c.segment,\n       SUM(i.quantity * i.unit_price) AS total_spent,\n       COUNT(DISTINCT o.id) AS orders\nFROM customers c\nJOIN orders o ON o.customer_id = c.id\nJOIN order_items i ON i.order_id = o.id\nWHERE o.status = 'completed'\nGROUP BY c.id, c.name, c.segment\nORDER BY total_spent DESC\nLIMIT 10;" },
+  { name: "Products never sold", sql: "SELECT p.name, p.category, p.price\nFROM products p\nLEFT JOIN order_items i ON i.product_id = p.id\nWHERE i.id IS NULL;" },
+  { name: "Avg salary by department", sql: "SELECT dept,\n       COUNT(*) AS headcount,\n       ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;" },
+  { name: "Order status funnel", sql: "SELECT status,\n       COUNT(*) AS orders,\n       ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM orders), 1) AS pct\nFROM orders\nGROUP BY status\nORDER BY orders DESC;" },
+  { name: "Repeat vs one-time buyers", sql: "WITH per_customer AS (\n  SELECT customer_id, COUNT(*) AS n\n  FROM orders\n  WHERE status = 'completed'\n  GROUP BY customer_id\n)\nSELECT CASE WHEN n = 1 THEN 'one-time'\n            WHEN n <= 3 THEN '2-3 orders'\n            ELSE '4+ orders' END AS buyer_type,\n       COUNT(*) AS customers\nFROM per_customer\nGROUP BY buyer_type\nORDER BY customers DESC;" },
+];
+
+const SQL_MISSION = [
+  { id: "explore", label: "Explore the schema", detail: "Click each table in the browser — check columns and row counts, then hit **Preview 10 rows** on `orders`." },
+  { id: "first", label: "Run your first query", detail: "SELECT is the verb of SQL. Try ~ SELECT name, city FROM customers LIMIT 10; ~ and press **Run** (or Ctrl+↵)." },
+  { id: "filter", label: "Filter with WHERE", detail: "Add a condition: ~ WHERE status = 'completed' ~. Combine with AND / OR, sort with ORDER BY." },
+  { id: "group", label: "Aggregate with GROUP BY", detail: "Collapse rows into groups: ~ SELECT status, COUNT(*) FROM orders GROUP BY status; ~" },
+  { id: "join", label: "JOIN two tables", detail: "Relationships live in keys: ~ JOIN customers c ON o.customer_id = c.id ~. Then LEFT JOIN to find customers with no orders." },
+  { id: "exercise", label: "Solve 3 exercises", detail: "Open the practice set and solve **at least exercises 1, 4 and 7** — press Check answer for instant feedback." },
+  { id: "cte", label: "Chain steps with a CTE", detail: "WITH breaks a hard query into named steps. Exercise 10 walks you through a two-CTE capstone." },
+  { id: "export", label: "Export your result", detail: "Run any query and click **Export CSV** — that's how query results become report inputs." },
+];
+
+type RunResult = { columns: string[]; rows: (string | number | null)[][]; ms: number };
 
 export function SqlTool() {
   const tables = getSqlTables();
   const { addXp } = useAcademy();
   const [sql, setSql] = React.useState("SELECT name, city, segment\nFROM customers\nLIMIT 10;");
-  const [result, setResult] = React.useState<{ columns: string[]; rows: (string | number | null)[][]; ms: number } | null>(null);
+  const [result, setResult] = React.useState<RunResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [openTable, setOpenTable] = React.useState<string | null>("customers");
   const [exOpen, setExOpen] = React.useState(false);
+  const [tplOpen, setTplOpen] = React.useState(false);
+  const [histOpen, setHistOpen] = React.useState(false);
+  const [history, setHistory] = React.useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("aaa-sql-history") ?? "[]"); } catch { return []; }
+  });
   const [checked, setChecked] = React.useState<Record<number, "pass" | "fail" | null>>({});
   const [showHint, setShowHint] = React.useState<Record<number, boolean>>({});
   const [showSolution, setShowSolution] = React.useState<Record<number, boolean>>({});
-  const [completedCount, setCompletedCount] = React.useState(0);
 
   const run = (query?: string) => {
     const q = (query ?? sql).trim();
     if (!q) return;
+    const t0 = performance.now();
     try {
       const res = runSql(q, tables);
-      setResult(res);
+      setResult({ ...res, ms: Math.max(1, Math.round(performance.now() - t0)) });
       setError(null);
+      setHistory((h) => {
+        const next = [q, ...h.filter((x) => x !== q)].slice(0, 25);
+        try { localStorage.setItem("aaa-sql-history", JSON.stringify(next)); } catch {}
+        return next;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setResult(null);
@@ -105,11 +159,11 @@ export function SqlTool() {
     try {
       const user = runSql(sql, tables);
       const sol = runSql(ex.solution, tables);
-      const norm = (r: typeof user) =>
+      const norm = (r: RunResult) =>
         JSON.stringify([r.columns.map((c) => c.toLowerCase()), r.rows.map((row) => row.map((v) => (v === null ? "" : typeof v === "number" ? +Number(v).toFixed(4) : String(v))))]);
       const ok = norm(user) === norm(sol);
       setChecked((c) => ({ ...c, [ex.id]: ok ? "pass" : "fail" }));
-      if (ok && !checked[ex.id]) { addXp(15); setCompletedCount((n) => n + 1); }
+      if (ok && !checked[ex.id]) addXp(15);
     } catch (e) {
       setChecked((c) => ({ ...c, [ex.id]: "fail" }));
       setError(e instanceof Error ? e.message : String(e));
@@ -121,47 +175,80 @@ export function SqlTool() {
     setExOpen(false);
   };
 
+  const exportResults = () => {
+    if (!result) return;
+    const csv = [
+      result.columns.map((c) => (/[,"]/.test(c) ? `"${c}"` : c)).join(","),
+      ...result.rows.map((r) => r.map((v) => {
+        const s = v === null ? "" : String(v);
+        return /[",]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+      }).join(",")),
+    ].join("\n");
+    downloadFile("query_results.csv", csv, "text/csv");
+  };
+
+  const passedCount = Object.values(checked).filter((v) => v === "pass").length;
+
+  /* dynamic tips */
+  const tips: string[] = React.useMemo(() => {
+    const t: string[] = [];
+    if (!result && !error) t.push("Hit **Run** (or Ctrl+↵) to execute the query. Start small: one table, a few columns, LIMIT 10.");
+    if (result) {
+      t.push(result.rows.length >= 500
+        ? "500+ rows returned — add a LIMIT or aggregate with GROUP BY so the answer is readable."
+        : `${result.rows.length} rows in ${result.ms} ms. Click **Export CSV** to reuse the result in Excel or a dashboard.`);
+    }
+    if (error) t.push("Read the error closely — SQL fails loudly, not silently. Check spelling, commas and the FROM table first.");
+    if (!Object.values(checked).some(Boolean)) t.push("The fastest way to learn: open **Exercises** and do #1, then #4. Check answer gives instant feedback.");
+    return t.slice(0, 3);
+  }, [result, error, checked]);
+
   return (
     <div className="space-y-4">
       <ToolHeader
-        icon={<Database className="h-5 w-5 text-emerald-400" />}
+        icon={<Database className="h-5 w-5 text-sky-500 dark:text-sky-400" />}
         title="SQL Playground"
-        subtitle="Real in-browser SQL engine — JOINs, GROUP BY, HAVING, CTEs. Zero setup, instant results."
+        subtitle="Real in-browser SQL engine — JOINs, GROUP BY, HAVING, CASE, CTEs. Zero setup, instant results."
         accent="sky"
         actions={
-          <Button variant="outline" size="sm" className="border-white/15 bg-transparent hover:bg-white/10" onClick={() => setExOpen(!exOpen)}>
-            <BookOpenCheck className="h-4 w-4" /> Exercises {Object.values(checked).filter(Boolean).length}/10
-          </Button>
+          <>
+            <Button variant="outline" size="sm" className="border-border" onClick={() => setTplOpen(!tplOpen)}>
+              <Sparkles className="h-4 w-4" /> Templates
+            </Button>
+            <Button variant="outline" size="sm" className="border-border" onClick={() => setExOpen(!exOpen)}>
+              <BookOpenCheck className="h-4 w-4" /> Exercises {passedCount}/{EXERCISES.length}
+            </Button>
+          </>
         }
       />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_1fr]">
         {/* schema browser */}
         <div className={`${PANEL} max-h-[70vh] overflow-auto scrollbar-thin`}>
-          <div className={PANEL_HEAD}><span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Database className="h-3.5 w-3.5 text-emerald-400" /> Schema · store_db</span></div>
+          <div className={PANEL_HEAD}><span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Database className="h-3.5 w-3.5 text-sky-500" /> Schema · store_db</span></div>
           <div className="p-2">
             {Object.values(tables).map((t) => (
-              <div key={t.name} className="mb-1 overflow-hidden rounded-lg border border-white/5">
+              <div key={t.name} className="mb-1 overflow-hidden rounded-lg border border-border/60">
                 <button
-                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition-colors ${openTable === t.name ? "bg-emerald-500/10 text-emerald-300" : "text-zinc-300 hover:bg-white/5"}`}
+                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition-colors ${openTable === t.name ? "bg-sky-500/10 text-sky-700 dark:text-sky-300" : "text-foreground/85 hover:bg-muted"}`}
                   onClick={() => setOpenTable(openTable === t.name ? null : t.name)}
                 >
                   <span className="flex items-center gap-2 font-mono"><Table2 className="h-3.5 w-3.5" />{t.name}</span>
-                  <span className="flex items-center gap-1 text-[11px] text-zinc-500">{t.rows.length} rows<ChevronRight className={`h-3 w-3 transition-transform ${openTable === t.name ? "rotate-90" : ""}`} /></span>
+                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">{t.rows.length} rows<ChevronRight className={`h-3 w-3 transition-transform ${openTable === t.name ? "rotate-90" : ""}`} /></span>
                 </button>
                 {openTable === t.name && (
-                  <div className="border-t border-white/5 bg-black/20 px-3 py-2">
-                    <p className="mb-2 text-[11px] leading-snug text-zinc-500">{t.description}</p>
+                  <div className="border-t border-border/60 bg-muted/30 px-3 py-2">
+                    <p className="mb-2 text-[11px] leading-snug text-muted-foreground">{t.description}</p>
                     <div className="space-y-0.5 font-mono text-[11px]">
                       {t.columns.map((c) => (
                         <div key={c.name} className="flex justify-between">
-                          <span className="text-zinc-300">{c.name}</span>
-                          <span className="text-amber-400/70">{c.type}</span>
+                          <span className="text-foreground/85">{c.name}</span>
+                          <span className="text-amber-600 dark:text-amber-400/80">{c.type}</span>
                         </div>
                       ))}
                     </div>
                     <button
-                      className="mt-2 w-full rounded-md border border-white/10 py-1 text-[11px] text-zinc-400 hover:bg-white/5"
+                      className="mt-2 w-full rounded-md border border-border py-1 text-[11px] text-muted-foreground hover:bg-muted"
                       onClick={() => { setSql(`SELECT * FROM ${t.name} LIMIT 10;`); run(`SELECT * FROM ${t.name} LIMIT 10;`); }}
                     >
                       Preview 10 rows
@@ -170,7 +257,7 @@ export function SqlTool() {
                 )}
               </div>
             ))}
-            <p className="px-2 pt-2 text-[11px] leading-relaxed text-zinc-600">
+            <p className="px-2 pt-2 text-[11px] leading-relaxed text-muted-foreground/80">
               Relationships: orders.customer_id → customers.id · order_items.order_id → orders.id · order_items.product_id → products.id · employees.manager_id → employees.id
             </p>
           </div>
@@ -180,53 +267,95 @@ export function SqlTool() {
         <div className="space-y-3">
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Terminal className="h-3.5 w-3.5 text-emerald-400" /> Query editor</span>
-              <Button size="sm" className="h-7 bg-emerald-500 px-3 text-xs font-semibold text-black hover:bg-emerald-400" onClick={() => run()}>
-                <Play className="h-3 w-3" /> Run <span className="ml-1 hidden opacity-60 sm:inline">Ctrl+↵</span>
-              </Button>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Terminal className="h-3.5 w-3.5 text-sky-500" /> Query editor</span>
+              <div className="flex items-center gap-1.5">
+                {history.length > 0 && (
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setHistOpen(!histOpen)}>
+                    <Clock className="h-3 w-3" /> History ({history.length})
+                  </Button>
+                )}
+                <Button size="sm" className="h-7 bg-emerald-500 px-3 text-xs font-semibold text-black hover:bg-emerald-400" onClick={() => run()}>
+                  <Play className="h-3 w-3" /> Run <span className="ml-1 hidden opacity-60 sm:inline">Ctrl+↵</span>
+                </Button>
+              </div>
             </div>
             <textarea
               value={sql}
               onChange={(e) => setSql(e.target.value)}
               onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); } }}
               spellCheck={false}
-              className="h-44 w-full resize-y bg-black/40 p-4 font-mono text-[13px] leading-relaxed text-emerald-100/90 outline-none scrollbar-thin"
+              className="code-surface h-44 w-full resize-y p-4 font-mono text-[13px] leading-relaxed text-emerald-900 outline-none scrollbar-thin dark:text-emerald-100/90"
               placeholder="SELECT * FROM customers LIMIT 10;"
             />
             {error && (
-              <div className="border-t border-red-500/20 bg-red-500/10 px-4 py-2 font-mono text-xs text-red-300">⚠ {error}</div>
+              <div className="border-t border-red-500/20 bg-red-500/10 px-4 py-2 font-mono text-xs text-red-700 dark:text-red-300">⚠ {error}</div>
             )}
           </div>
 
+          {/* templates */}
+          {tplOpen && (
+            <div className={`${PANEL} max-h-72 overflow-auto scrollbar-thin`}>
+              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Real-world query templates — load, run, then tweak</span></div>
+              <div className="divide-y divide-border/60">
+                {TEMPLATES.map((t) => (
+                  <div key={t.name} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                    <span className="text-[13px] font-medium text-foreground/90">{t.name}</span>
+                    <div className="flex gap-1.5">
+                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setSql(t.sql)}>Load</Button>
+                      <Button size="sm" variant="outline" className="h-7 border-border px-2 text-xs" onClick={() => run(t.sql)}>Run</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* history */}
+          {histOpen && history.length > 0 && (
+            <div className={`${PANEL} max-h-60 overflow-auto scrollbar-thin`}>
+              <div className={PANEL_HEAD}>
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Query history</span>
+                <button className="text-[11px] text-muted-foreground hover:text-red-500" onClick={() => { setHistory([]); try { localStorage.removeItem("aaa-sql-history"); } catch {} }}>Clear</button>
+              </div>
+              <div className="divide-y divide-border/60">
+                {history.map((q, i) => (
+                  <button key={i} className="block w-full truncate px-4 py-2 text-left font-mono text-[11.5px] text-muted-foreground hover:bg-muted" onClick={() => { setSql(q); setHistOpen(false); }} title={q}>
+                    {q.replaceAll("\n", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* exercises */}
           {exOpen && (
-            <div className={`${PANEL} max-h-72 overflow-auto scrollbar-thin`}>
-              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Practice set — from SELECT to CTEs</span></div>
-              <div className="divide-y divide-white/5">
+            <div className={`${PANEL} max-h-96 overflow-auto scrollbar-thin`}>
+              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Practice set — from SELECT to CTEs</span></div>
+              <div className="divide-y divide-border/60">
                 {EXERCISES.map((ex) => (
                   <div key={ex.id} className="px-4 py-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-[13px] font-semibold text-zinc-200">
-                          <span className="mr-2 rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] text-emerald-300">{ex.id}</span>
+                        <p className="text-[13px] font-semibold text-foreground">
+                          <span className="mr-2 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-sky-700 dark:text-emerald-300">{ex.id}</span>
                           {ex.title}
                         </p>
-                        <p className="mt-0.5 text-xs leading-relaxed text-zinc-400">{ex.prompt}</p>
+                        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{ex.prompt}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        {checked[ex.id] === "pass" && <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
-                        {checked[ex.id] === "fail" && <XCircle className="h-4 w-4 text-red-400" />}
+                        {checked[ex.id] === "pass" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+                        {checked[ex.id] === "fail" && <XCircle className="h-4 w-4 text-red-500" />}
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => loadExercise(ex)}>Load</Button>
                       </div>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <button className="text-[11px] text-amber-400/80 hover:text-amber-300" onClick={() => setShowHint((h) => ({ ...h, [ex.id]: !h[ex.id] }))}>{showHint[ex.id] ? "Hide hint" : "Hint"}</button>
-                      <button className="text-[11px] text-sky-400/80 hover:text-sky-300" onClick={() => setShowSolution((s) => ({ ...s, [ex.id]: !s[ex.id] }))}>{showSolution[ex.id] ? "Hide solution" : "Solution"}</button>
-                      <Button size="sm" variant="outline" className="h-6 border-white/15 px-2 text-[11px]" onClick={() => check(ex)}>Check answer</Button>
+                      <button className="text-[11px] text-amber-600 hover:text-amber-500 dark:text-amber-400/80" onClick={() => setShowHint((h) => ({ ...h, [ex.id]: !h[ex.id] }))}>{showHint[ex.id] ? "Hide hint" : "Hint"}</button>
+                      <button className="text-[11px] text-sky-600 hover:text-sky-500 dark:text-sky-400/80" onClick={() => setShowSolution((s) => ({ ...s, [ex.id]: !s[ex.id] }))}>{showSolution[ex.id] ? "Hide solution" : "Solution"}</button>
+                      <Button size="sm" variant="outline" className="h-6 border-border px-2 text-[11px]" onClick={() => check(ex)}>Check answer</Button>
                     </div>
-                    {showHint[ex.id] && <p className="mt-1.5 rounded-md bg-amber-500/5 px-2 py-1 text-[11px] text-amber-200/80">💡 {ex.hint}</p>}
+                    {showHint[ex.id] && <p className="mt-1.5 rounded-md bg-amber-500/5 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-200/80">💡 {ex.hint}</p>}
                     {showSolution[ex.id] && (
-                      <pre className="mt-1.5 overflow-x-auto rounded-md bg-black/50 p-2 font-mono text-[11px] text-sky-200/80">{ex.solution}</pre>
+                      <pre className="code-surface mt-1.5 overflow-x-auto rounded-md p-2 font-mono text-[11px] text-sky-800 dark:text-sky-200/80">{ex.solution}</pre>
                     )}
                   </div>
                 ))}
@@ -238,35 +367,51 @@ export function SqlTool() {
           {result && (
             <div className={PANEL}>
               <div className={PANEL_HEAD}>
-                <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Results</span>
-                <div className="flex items-center gap-2 text-[11px] text-zinc-500">
-                  <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-300">{result.rows.length} rows</Badge>
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Results</span>
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-300">{result.rows.length} rows</Badge>
                   <span>{result.ms} ms</span>
+                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[11px]" onClick={exportResults}><Download className="h-3 w-3" /> Export CSV</Button>
                 </div>
               </div>
               <div className="max-h-[46vh] overflow-auto scrollbar-thin">
                 <table className="w-full text-left text-[13px]">
-                  <thead className="sticky top-0 bg-zinc-900">
-                    <tr>{result.columns.map((c, i) => <th key={i} className="whitespace-nowrap border-b border-white/10 px-3 py-2 font-mono text-[11px] font-semibold text-emerald-300">{c}</th>)}</tr>
+                  <thead className="sticky top-0 bg-card">
+                    <tr>{result.columns.map((c, i) => <th key={i} className="whitespace-nowrap border-b border-border px-3 py-2 font-mono text-[11px] font-semibold text-sky-700 dark:text-emerald-300">{c}</th>)}</tr>
                   </thead>
                   <tbody>
                     {result.rows.slice(0, 500).map((row, ri) => (
-                      <tr key={ri} className="border-b border-white/5 hover:bg-white/[0.03]">
+                      <tr key={ri} className="border-b border-border/50 hover:bg-muted/50">
                         {row.map((v, ci) => (
-                          <td key={ci} className={`whitespace-nowrap px-3 py-1.5 font-mono text-xs ${typeof v === "number" ? "text-right text-zinc-200" : "text-zinc-400"}`}>
-                            {v === null || v === "" ? <span className="italic text-zinc-600">NULL</span> : typeof v === "number" ? v.toLocaleString("en-US") : v}
+                          <td key={ci} className={`whitespace-nowrap px-3 py-1.5 font-mono text-xs ${typeof v === "number" ? "text-right text-foreground" : "text-muted-foreground"}`}>
+                            {v === null || v === "" ? <span className="italic text-muted-foreground/50">NULL</span> : typeof v === "number" ? v.toLocaleString("en-US") : v}
                           </td>
                         ))}
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                {result.rows.length > 500 && <p className="px-3 py-2 text-[11px] text-zinc-500">Showing first 500 rows.</p>}
+                {result.rows.length > 500 && <p className="px-3 py-2 text-[11px] text-muted-foreground">Showing first 500 rows.</p>}
               </div>
             </div>
           )}
+
+          {/* csv practice files */}
+          <div className={`${PANEL} flex flex-wrap items-center gap-2 px-4 py-2.5 text-xs text-muted-foreground`}>
+            <Eye className="h-3.5 w-3.5" /> Want the raw files instead? Download any sample as CSV:
+            {["clean_sales", "ecom_orders"].map((id) => {
+              const ds = getDatasetById(id)!;
+              return (
+                <button key={id} className="rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted" onClick={() => downloadDatasetCSV(id)}>
+                  {ds.name.split(" (")[0]} ({ds.rows.length.toLocaleString()} rows)
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
+
+      <Coach view="sql" accent="sky" mission={SQL_MISSION} tips={tips} why="SQL is the most-requested hard skill in data job postings. Analysts pull their own data instead of waiting on engineering, answer 'how much / how many / why' questions in minutes, and executives trust the numbers because the query is the documentation." />
     </div>
   );
 }

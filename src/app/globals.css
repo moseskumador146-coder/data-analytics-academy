@@ -47,6 +47,14 @@
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
+  /* academy chart + surface tokens (light) */
+  --chart-grid: rgba(0, 0, 0, 0.08);
+  --chart-axis: #52525b;
+  --chart-line: #10b981;
+  --tooltip-bg: #ffffff;
+  --tooltip-border: rgba(0, 0, 0, 0.1);
+  --tooltip-text: #18181b;
+  --grid-line: rgba(0, 0, 0, 0.07);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
@@ -81,6 +89,14 @@
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
+  /* academy chart + surface tokens (dark) */
+  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-axis: #a1a1aa;
+  --chart-line: #34d399;
+  --tooltip-bg: #18181b;
+  --tooltip-border: rgba(255, 255, 255, 0.1);
+  --tooltip-text: #e4e4e7;
+  --grid-line: rgba(255, 255, 255, 0.06);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
@@ -124,7 +140,7 @@
 /* ---------- academy custom scrollbar ---------- */
 .scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
 }
 .scrollbar-thin::-webkit-scrollbar {
   width: 8px;
@@ -134,11 +150,21 @@
   background: transparent;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(128, 128, 128, 0.35);
   border-radius: 8px;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(128, 128, 128, 0.55);
+}
+
+/* ---------- code / mono surfaces ---------- */
+.code-surface {
+  background: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+
+/* keep charts crisp on both themes */
+.recharts-wrapper * {
+  outline: none;
 }
 .scrollbar-none {
   scrollbar-width: none;

@@ -262,7 +262,7 @@ if __name__ == "__main__":
 `;
 }
 
-const PROJECT_SQL: Record<string, string[]> = {
+const PROJECT_SQL: Record<string, [string, string][]> = {
   p4: [
     ["01_revenue.sql", `-- Completed revenue per customer (grain: one row = one order)
 WITH line_rev AS (

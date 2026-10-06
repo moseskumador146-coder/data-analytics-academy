@@ -1,0 +1,730 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→/* Excel Studio — spreadsheet with a real formula engine, CSV import/export,
+     4→     4→   sort/dedupe/text ops, stats panel and saved sheets. All client-side, instant. */
+     5→     5→
+     6→     6→import * as React from "react";
+     7→     7→import { Button } from "@/components/ui/button";
+     8→     8→import { Input } from "@/components/ui/input";
+     9→     9→import {
+    10→    10→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    11→    11→} from "@/components/ui/select";
+    12→    12→import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+    13→    13→import { ToolHeader, PANEL, PANEL_HEAD, fmtNum } from "./shared";
+    14→    14→import { useAcademy } from "@/lib/academy/store";
+    15→    15→import {
+    16→    16→  getAllDatasets, getDatasetById, rowsToCSV, downloadFile, type Row,
+    17→    17→} from "@/lib/academy/datasets";
+    18→    18→import Papa from "papaparse";
+    19→    19→import {
+    20→    20→  Database, Download, Eraser, FileSpreadsheet, Save, Sigma, Trash2, Upload, Wand2, FolderOpen,
+    21→    21→} from "lucide-react";
+    22→    22→
+    23→    23→/* ================= formula engine ================= */
+    24→    24→const COLS = 26;
+    25→    25→const ROWS = 200;
+    26→    26→const colName = (i: number) => String.fromCharCode(65 + i);
+    27→    27→const refFor = (c: number, r: number) => `${colName(c)}${r + 1}`;
+    28→    28→const parseRef = (ref: string): [number, number] | null => {
+    29→    29→  const m = /^\$?([A-Z])\$?(\d+)$/i.exec(ref.trim());
+    30→    30→  if (!m) return null;
+    31→    31→  return [m[1].toUpperCase().charCodeAt(0) - 65, parseInt(m[2], 10) - 1];
+    32→    32→};
+    33→    33→
+    34→    34→type Val = string | number;
+    35→    35→type Arg = { kind: "value"; v: Val } | { kind: "range"; values: string[] };
+    36→    36→
+    37→    37→class FormulaError extends Error {}
+    38→    38→
+    39→    39→function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set<string>): Val {
+    40→    40→  let pos = 0;
+    41→    41→  const ws = () => { while (pos < src.length && /\s/.test(src[pos])) pos++; };
+    42→    42→
+    43→    43→  function parseExpr(): Val { return parseCompare(); }
+    44→    44→
+    45→    45→  function parseCompare(): Val {
+    46→    46→    let l = parseConcat();
+    47→    47→    ws();
+    48→    48→    const ops = ["<=", ">=", "<>", "=", "<", ">"];
+    49→    49→    for (const op of ops) {
+    50→    50→      if (src.startsWith(op, pos)) {
+    51→    51→        pos += op.length;
+    52→    52→        const r = parseConcat();
+    53→    53→        const ln = typeof l === "number" ? l : parseFloat(String(l));
+    54→    54→        const rn = typeof r === "number" ? r : parseFloat(String(r));
+    55→    55→        const numeric = !isNaN(ln) && !isNaN(rn);
+    56→    56→        switch (op) {
+    57→    57→          case "=": return (numeric ? ln === rn : String(l) === String(r)) ? 1 : 0;
+    58→    58→          case "<>": return (numeric ? ln !== rn : String(l) !== String(r)) ? 1 : 0;
+    59→    59→          case "<": return numeric ? (ln < rn ? 1 : 0) : String(l) < String(r) ? 1 : 0;
+    60→    60→          case ">": return numeric ? (ln > rn ? 1 : 0) : String(l) > String(r) ? 1 : 0;
+    61→    61→          case "<=": return numeric ? (ln <= rn ? 1 : 0) : String(l) <= String(r) ? 1 : 0;
+    62→    62→          case ">=": return numeric ? (ln >= rn ? 1 : 0) : String(l) >= String(r) ? 1 : 0;
+    63→    63→        }
+    64→    64→      }
+    65→    65→    }
+    66→    66→    return l;
+    67→    67→  }
+    68→    68→
+    69→    69→  function parseConcat(): Val {
+    70→    70→    let l = parseAdd();
+    71→    71→    for (;;) {
+    72→    72→      ws();
+    73→    73→      if (src[pos] === "&") {
+    74→    74→        pos++;
+    75→    75→        const r = parseAdd();
+    76→    76→        l = `${fmtRaw(l)}${fmtRaw(r)}`;
+    77→    77→      } else return l;
+    78→    78→    }
+    79→    79→  }
+    80→    80→
+    81→    81→  function parseAdd(): Val {
+    82→    82→    let l = parseMul();
+    83→    83→    for (;;) {
+    84→    84→      ws();
+    85→    85→      if (src[pos] === "+") { pos++; l = num(l) + num(parseMul()); }
+    86→    86→      else if (src[pos] === "-") { pos++; l = num(l) - num(parseMul()); }
+    87→    87→      else return l;
+    88→    88→    }
+    89→    89→  }
+    90→    90→  function parseMul(): Val {
+    91→    91→    let l = parsePow();
+    92→    92→    for (;;) {
+    93→    93→      ws();
+    94→    94→      if (src[pos] === "*") { pos++; l = num(l) * num(parsePow()); }
+    95→    95→      else if (src[pos] === "/") {
+    96→    96→        pos++;
+    97→    97→        const d = num(parsePow());
+    98→    98→        if (d === 0) throw new FormulaError("#DIV/0!");
+    99→    99→        l = num(l) / d;
+   100→   100→      } else return l;
+   101→   101→    }
+   102→   102→  }
+   103→   103→  function parsePow(): Val {
+   104→   104→    let l = parseUnary();
+   105→   105→    for (;;) {
+   106→   106→      ws();
+   107→   107→      if (src[pos] === "^") { pos++; l = Math.pow(num(l), num(parseUnary())); }
+   108→   108→      else return l;
+   109→   109→    }
+   110→   110→  }
+   111→   111→  function parseUnary(): Val {
+   112→   112→    ws();
+   113→   113→    if (src[pos] === "-") { pos++; return -num(parseUnary()); }
+   114→   114→    if (src[pos] === "+") { pos++; return num(parseUnary()); }
+   115→   115→    return parsePrimary();
+   116→   116→  }
+   117→   117→
+   118→   118→  function parsePrimary(): Val | Arg {
+   119→   119→    ws();
+   120→   120→    if (src[pos] === "(") {
+   121→   121→      pos++;
+   122→   122→      const v = parseExpr();
+   123→   123→      ws();
+   124→   124→      if (src[pos] !== ")") throw new FormulaError("#SYNTAX!");
+   125→   125→      pos++;
+   126→   126→      return v;
+   127→   127→    }
+   128→   128→    if (src[pos] === '"') {
+   129→   129→      let s = "";
+   130→   130→      pos++;
+   131→   131→      while (pos < src.length && src[pos] !== '"') s += src[pos++];
+   132→   132→      pos++;
+   133→   133→      return s;
+   134→   134→    }
+   135→   135→    const numMatch = /^\d+(\.\d+)?/.exec(src.slice(pos));
+   136→   136→    if (numMatch) { pos += numMatch[0].length; return parseFloat(numMatch[0]); }
+   137→   137→    const fnMatch = /^([A-Z][A-Z0-9.]*)\(/i.exec(src.slice(pos));
+   138→   138→    if (fnMatch) {
+   139→   139→      const name = fnMatch[1].toUpperCase();
+   140→   140→      pos += fnMatch[0].length;
+   141→   141→      const args: Arg[] = [];
+   142→   142→      if (src[pos] === ")") pos++;
+   143→   143→      else {
+   144→   144→        for (;;) {
+   145→   145→          args.push(parseArg());
+   146→   146→          if (src[pos] === ",") { pos++; continue; }
+   147→   147→          if (src[pos] === ")") { pos++; break; }
+   148→   148→          throw new FormulaError("#SYNTAX!");
+   149→   149→        }
+   150→   150→      }
+   151→   151→      return callFn(name, args);
+   152→   152→    }
+   153→   153→    const refMatch = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
+   154→   154→    if (refMatch) {
+   155→   155→      const ref = refMatch[0].toUpperCase();
+   156→   156→      pos += refMatch[0].length;
+   157→   157→      ws();
+   158→   158→      if (src[pos] === ":") {
+   159→   159→        pos++;
+   160→   160→        const ref2Match = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
+   161→   161→        if (!ref2Match) throw new FormulaError("#SYNTAX!");
+   162→   162→        pos += ref2Match[0].length;
+   163→   163→        return { kind: "range", values: rangeValues(ref, ref2Match[0].toUpperCase(), cells, stack) };
+   164→   164→      }
+   165→   165→      return { kind: "value", v: cellValue(ref, cells, stack) };
+   166→   166→    }
+   167→   167→    if (/^TRUE$/i.test(src.slice(pos, pos + 4))) { pos += 4; return 1; }
+   168→   168→    if (/^FALSE$/i.test(src.slice(pos, pos + 5))) { pos += 5; return 0; }
+   169→   169→    throw new FormulaError("#NAME?");
+   170→   170→  }
+   171→   171→
+   172→   172→  function parseArg(): Arg {
+   173→   173→    ws();
+   174→   174→    const startRef = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
+   175→   175→    if (startRef) {
+   176→   176→      const ref = startRef[0].toUpperCase();
+   177→   177→      const after = src.slice(pos + startRef[0].length);
+   178→   178→      if (/^\s*:/.test(after)) {
+   179→   179→        const m2 = /^\s*:\s*\$?[A-Za-z]\$?\d+/.exec(after);
+   180→   180→        if (m2) {
+   181→   181→          const ref2 = /^\s*:\s*(\$?[A-Za-z]\$?\d+)/.exec(after)![1].toUpperCase();
+   182→   182→          pos += startRef[0].length + /^\s*:\s*\$?[A-Za-z]\$?\d+/.exec(after)![0].length;
+   183→   183→          return { kind: "range", values: rangeValues(ref, ref2, cells, stack) };
+   184→   184→        }
+   185→   185→      }
+   186→   186→    }
+   187→   187→    const v = parseExpr();
+   188→   188→    return { kind: "value", v };
+   189→   189→  }
+   190→   190→
+   191→   191→  const v = parseExpr();
+   192→   192→  ws();
+   193→   193→  if (pos < src.length) throw new FormulaError("#SYNTAX!");
+   194→   194→  return v;
+   195→   195→}
+   196→   196→
+   197→   197→function fmtRaw(v: Val): string {
+   198→   198→  return typeof v === "number" ? fmtNum(v) : String(v);
+   199→   199→}
+   200→   200→function num(v: Val): number {
+   201→   201→  if (typeof v === "number") return v;
+   202→   202→  const n = parseFloat(String(v ?? "").replace(/[$,%\s]/g, ""));
+   203→   203→  if (isNaN(n)) throw new FormulaError("#VALUE!");
+   204→   204→  return n;
+   205→   205→}
+   206→   206→function cellValue(ref: string, cells: Record<string, string>, stack: Set<string>): Val {
+   207→   207→  if (stack.has(ref)) throw new FormulaError("#CYCLE!");
+   208→   208→  const raw = cells[ref] ?? "";
+   209→   209→  if (raw === "") return "";
+   210→   210→  if (raw.startsWith("=")) {
+   211→   211→    stack.add(ref);
+   212→   212→    try {
+   213→   213→      return evalSheetFormula(raw.slice(1), cells, stack);
+   214→   214→    } finally {
+   215→   215→      stack.delete(ref);
+   216→   216→    }
+   217→   217→  }
+   218→   218→  const n = parseFloat(raw);
+   219→   219→  return isNaN(n) || !/^-?[\d.,$%eE+-]+$/.test(raw) || /[\d]([.,]\d+)*[.,]\D/.test(raw) ? raw : n;
+   220→   220→}
+   221→   221→function rangeValues(a: string, b: string, cells: Record<string, string>, stack: Set<string>): string[] {
+   222→   222→  const [c1, r1] = parseRef(a)!;
+   223→   223→  const [c2, r2] = parseRef(b)!;
+   224→   224→  const [cMin, cMax] = [Math.min(c1, c2), Math.max(c1, c2)];
+   225→   225→  const [rMin, rMax] = [Math.min(r1, r2), Math.max(r1, r2)];
+   226→   226→  const out: string[] = [];
+   227→   227→  for (let r = rMin; r <= rMax; r++)
+   228→   228→    for (let c = cMin; c <= cMax; c++)
+   229→   229→      out.push(String(cellValue(refFor(c, r), cells, stack) ?? ""));
+   230→   230→  return out;
+   231→   231→}
+   232→   232→
+   233→   233→function callFn(name: string, args: Arg[], ): Val {
+   234→   234→  const flat = (): string[] => {
+   235→   235→    const out: string[] = [];
+   236→   236→    for (const a of args) {
+   237→   237→      if (a.kind === "range") out.push(...a.values);
+   238→   238→      else out.push(String(a.v));
+   239→   239→    }
+   240→   240→    return out;
+   241→   241→  };
+   242→   242→  const numeric = (vals: string[]): number[] =>
+   243→   243→    vals.map((v) => parseFloat(String(v ?? "").replace(/[$,\s]/g, ""))).filter((n) => !isNaN(n));
+   244→   244→  const nonEmpty = (): string[] => flat().filter((v) => v !== "" && v !== "#CYCLE!");
+   245→   245→
+   246→   246→  switch (name) {
+   247→   247→    case "SUM": return numeric(flat()).reduce((s, n) => s + n, 0);
+   248→   248→    case "AVERAGE": {
+   249→   249→      const n = numeric(flat());
+   250→   250→      return n.length ? n.reduce((s, x) => s + x, 0) / n.length : 0;
+   251→   251→    }
+   252→   252→    case "MEDIAN": {
+   253→   253→      const n = numeric(flat()).sort((a, b) => a - b);
+   254→   254→      if (!n.length) return 0;
+   255→   255→      const mid = Math.floor(n.length / 2);
+   256→   256→      return n.length % 2 ? n[mid] : (n[mid - 1] + n[mid]) / 2;
+   257→   257→    }
+   258→   258→    case "STDEV": {
+   259→   259→      const n = numeric(flat());
+   260→   260→      if (n.length < 2) return 0;
+   261→   261→      const mean = n.reduce((s, x) => s + x, 0) / n.length;
+   262→   262→      return Math.sqrt(n.reduce((s, x) => s + (x - mean) ** 2, 0) / (n.length - 1));
+   263→   263→    }
+   264→   264→    case "COUNT": return numeric(flat()).length;
+   265→   265→    case "COUNTA": return nonEmpty().length;
+   266→   266→    case "MIN": { const n = numeric(flat()); return n.length ? Math.min(...n) : 0; }
+   267→   267→    case "MAX": { const n = numeric(flat()); return n.length ? Math.max(...n) : 0; }
+   268→   268→    case "ROUND": {
+   269→   269→      const a = args.map((x) => (x.kind === "value" ? x.v : num(x.values[0] ?? "0")));
+   270→   270→      const d = a.length > 1 ? num(a[1]) : 0;
+   271→   271→      return +num(a[0]).toFixed(d);
+   272→   272→    }
+   273→   273→    case "ABS": return Math.abs(num(args[0].kind === "value" ? args[0].v : num(args[0].values[0] ?? "0")));
+   274→   274→    case "IF": {
+   275→   275→      const cond = args[0].kind === "value" ? args[0].v : num(args[0].values[0] ?? "0");
+   276→   276→      const yes = args[1]?.kind === "value" ? args[1].v : args[1]?.values[0] ?? "";
+   277→   277→      const no = args[2]?.kind === "value" ? args[2].v : args[2]?.values[0] ?? "";
+   278→   278→      const truthy = typeof cond === "number" ? cond !== 0 : String(cond).toUpperCase() === "TRUE" || (String(cond) !== "" && String(cond) !== "FALSE");
+   279→   279→      return truthy ? yes : no;
+   280→   280→    }
+   281→   281→    case "AND": return args.every((a) => (typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() !== "FALSE" && a.v !== "")) ? 1 : 0;
+   282→   282→    case "OR": return args.some((a) => (typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() === "TRUE")) ? 1 : 0;
+   283→   283→    case "UPPER": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").toUpperCase();
+   284→   284→    case "LOWER": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").toLowerCase();
+   285→   285→    case "TRIM": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").trim();
+   286→   286→    case "LEN": return String(args[0].kind === "value" ? args[0].v : args[0].values[0] ?? "").length;
+   287→   287→    case "SUMIF":
+   288→   288→    case "COUNTIF": {
+   289→   289→      const rangeArg = args[0];
+   290→   290→      const critArg = args[1];
+   291→   291→      const crit = critArg.kind === "value" ? critArg.v : critArg.values[0] ?? "";
+   292→   292→      const sumRange = name === "SUMIF" && args[2] ? args[2] : null;
+   293→   293→      const test = (v: string): boolean => {
+   294→   294→        const cs = String(crit);
+   295→   295→        const m = /^(>=|<=|>|<|=|<>)(.*)$/.exec(cs);
+   296→   296→        if (m) {
+   297→   297→          const target = parseFloat(m[2].replace(/[$,\s]/g, ""));
+   298→   298→          const value = parseFloat(String(v).replace(/[$,\s]/g, ""));
+   299→   299→          if (!isNaN(target) && !isNaN(value)) {
+   300→   300→            switch (m[1]) {
+   301→   301→              case ">": return value > target;
+   302→   302→              case "<": return value < target;
+   303→   303→              case ">=": return value >= target;
+   304→   304→              case "<=": return value <= target;
+   305→   305→              case "=": return value === target;
+   306→   306→              case "<>": return value !== target;
+   307→   307→            }
+   308→   308→          }
+   309→   309→          return m[1] === "=" ? String(v) === m[2] : false;
+   310→   310→        }
+   311→   311→        return String(v).trim().toLowerCase() === cs.trim().toLowerCase();
+   312→   312→      };
+   313→   313→      if (name === "COUNTIF") {
+   314→   314→        const vals = rangeArg.kind === "range" ? rangeArg.values : [String(rangeArg.v)];
+   315→   315→        let c = 0;
+   316→   316→        for (const v of vals) if (v !== "" && test(v)) c++;
+   317→   317→        return c;
+   318→   318→      }
+   319→   319→      const vals = rangeArg.kind === "range" ? rangeArg.values : [String(rangeArg.v)];
+   320→   320→      const sums = sumRange ? (sumRange.kind === "range" ? sumRange.values : [String(sumRange.v)]) : vals;
+   321→   321→      let s = 0;
+   322→   322→      vals.forEach((v, i) => {
+   323→   323→        if (v !== "" && test(v)) {
+   324→   324→          const n = parseFloat(String(sums[i] ?? "").replace(/[$,\s]/g, ""));
+   325→   325→          if (!isNaN(n)) s += n;
+   326→   326→        }
+   327→   327→      });
+   328→   328→      return s;
+   329→   329→    }
+   330→   330→    default: throw new FormulaError(`#${name}?`);
+   331→   331→  }
+   332→   332→}
+   333→   333→
+   334→   334→function displayValue(ref: string, cells: Record<string, string>): string {
+   335→   335→  const raw = cells[ref];
+   336→   336→  if (raw === undefined || raw === "") return "";
+   337→   337→  if (!raw.startsWith("=")) return raw;
+   338→   338→  try {
+   339→   339→    const v = evalSheetFormula(raw.slice(1), cells, new Set([ref]));
+   340→   340→    if (typeof v === "number") {
+   341→   341→      if (Number.isInteger(v)) return v.toLocaleString("en-US");
+   342→   342→      return parseFloat(v.toFixed(4)).toLocaleString("en-US", { maximumFractionDigits: 4 });
+   343→   343→    }
+   344→   344→    return v;
+   345→   345→  } catch (e) {
+   346→   346→    return e instanceof FormulaError ? e.message : "#ERROR!";
+   347→   347→  }
+   348→   348→}
+   349→   349→
+   350→   350→function usedRange(cells: Record<string, string>): { rows: number; cols: number } {
+   351→   351→  let maxR = 0, maxC = 0;
+   352→   352→  for (const ref of Object.keys(cells)) {
+   353→   353→    if (!cells[ref]) continue;
+   354→   354→    const p = parseRef(ref);
+   355→   355→    if (p) { maxR = Math.max(maxR, p[1]); maxC = Math.max(maxC, p[0]); }
+   356→   356→  }
+   357→   357→  return { rows: Math.min(maxR + 1, ROWS), cols: Math.min(maxC + 1, COLS) };
+   358→   358→}
+   359→   359→
+   360→   360→/* ================= component ================= */
+   361→   361→export function ExcelTool() {
+   362→   362→  const { sheets, saveSheet, deleteSheet } = useAcademy();
+   363→   363→  const [cells, setCells] = React.useState<Record<string, string>>({});
+   364→   364→  const [active, setActive] = React.useState("A1");
+   365→   365→  const [editVal, setEditVal] = React.useState<string | null>(null);
+   366→   366→  const [sheetName, setSheetName] = React.useState("");
+   367→   367→  const [selectedCol, setSelectedCol] = React.useState(0);
+   368→   368→  const gridRef = React.useRef<HTMLDivElement>(null);
+   369→   369→  const fileRef = React.useRef<HTMLInputElement>(null);
+   370→   370→
+   371→   371→  const { rows: usedR, cols: usedC } = usedRange(cells);
+   372→   372→  const viewRows = Math.max(usedR + 8, 25);
+   373→   373→  const viewCols = Math.max(usedC + 3, 10);
+   374→   374→
+   375→   375→  const commit = () => {
+   376→   376→    if (editVal === null) return;
+   377→   377→    setCells((c) => {
+   378→   378→      const next = { ...c };
+   379→   379→      if (editVal === "") delete next[active];
+   380→   380→      else next[active] = editVal;
+   381→   381→      return next;
+   382→   382→    });
+   383→   383→    setEditVal(null);
+   384→   384→  };
+   385→   385→
+   386→   386→  const startEdit = (initial?: string) => {
+   387→   387→    setEditVal(initial ?? cells[active] ?? "");
+   388→   388→  };
+   389→   389→
+   390→   390→  const onKey = (e: React.KeyboardEvent) => {
+   391→   391→    const [c, r] = parseRef(active)!;
+   392→   392→    if (editVal !== null) {
+   393→   393→      if (e.key === "Enter") { e.preventDefault(); commit(); setActive(refFor(c, Math.min(r + 1, ROWS - 1))); }
+   394→   394→      if (e.key === "Escape") setEditVal(null);
+   395→   395→      if (e.key === "Tab") { e.preventDefault(); commit(); setActive(refFor(Math.min(c + 1, COLS - 1), r)); }
+   396→   396→      return;
+   397→   397→    }
+   398→   398→    if (e.key === "Enter") { e.preventDefault(); startEdit(); }
+   399→   399→    else if (e.key === "ArrowDown") { e.preventDefault(); setActive(refFor(c, Math.min(r + 1, ROWS - 1))); }
+   400→   400→    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(refFor(c, Math.max(r - 1, 0))); }
+   401→   401→    else if (e.key === "ArrowRight") { e.preventDefault(); setActive(refFor(Math.min(c + 1, COLS - 1), r)); }
+   402→   402→    else if (e.key === "ArrowLeft") { e.preventDefault(); setActive(refFor(Math.max(c - 1, 0), r)); }
+   403→   403→    else if (e.key === "Delete" || e.key === "Backspace") {
+   404→   404→      e.preventDefault();
+   405→   405→      setCells((cc) => { const n = { ...cc }; delete n[active]; return n; });
+   406→   406→    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+   407→   407→      startEdit(e.key);
+   408→   408→      e.preventDefault();
+   409→   409→    }
+   410→   410→  };
+   411→   411→
+   412→   412→  const loadDataset = (id: string) => {
+   413→   413→    const ds = id === "messy_sales" ? getDatasetById("messy_sales")! : getAllDatasets().find((d) => d.id === id);
+   414→   414→    if (!ds) return;
+   415→   415→    const next: Record<string, string> = {};
+   416→   416→    ds.columns.forEach((col, ci) => { next[refFor(ci, 0)] = col.name; });
+   417→   417→    ds.rows.slice(0, 150).forEach((row: Row, ri) => {
+   418→   418→      ds.columns.forEach((col, ci) => {
+   419→   419→        const v = row[col.key];
+   420→   420→        if (v !== undefined && v !== "") next[refFor(ci, ri + 1)] = String(v);
+   421→   421→      });
+   422→   422→    });
+   423→   423→    setCells(next);
+   424→   424→    setActive("A1");
+   425→   425→  };
+   426→   426→
+   427→   427→  const importCSV = (file: File) => {
+   428→   428→    Papa.parse<Row>(file, {
+   429→   429→      header: false,
+   430→   430→      skipEmptyLines: true,
+   431→   431→      complete: (res) => {
+   432→   432→        const next: Record<string, string> = {};
+   433→   433→        res.data.slice(0, 200).forEach((row, ri) => {
+   434→   434→          (row as string[]).slice(0, COLS).forEach((v, ci) => {
+   435→   435→            if (v !== "") next[refFor(ci, ri)] = String(v);
+   436→   436→          });
+   437→   437→        });
+   438→   438→        setCells(next);
+   439→   439→        setActive("A1");
+   440→   440→      },
+   441→   441→    });
+   442→   442→  };
+   443→   443→
+   444→   444→  const exportCSV = () => {
+   445→   445→    const { rows: R, cols: C } = usedRange(cells);
+   446→   446→    const lines: string[] = [];
+   447→   447→    for (let r = 0; r < R; r++) {
+   448→   448→      const vals: string[] = [];
+   449→   449→      for (let c = 0; c < C; c++) {
+   450→   450→        const v = displayValue(refFor(c, r), cells);
+   451→   451→        vals.push(/[",\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+   452→   452→      }
+   453→   453→      lines.push(vals.join(","));
+   454→   454→    }
+   455→   455→    downloadFile("spreadsheet_export.csv", lines.join("\n"), "text/csv");
+   456→   456→  };
+   457→   457→
+   458→   458→  const sortRows = (colIdx: number, dir: 1 | -1) => {
+   459→   459→    const { rows: R, cols: C } = usedRange(cells);
+   460→   460→    if (R < 2) return;
+   461→   461→    const dataRows: string[][] = [];
+   462→   462→    for (let r = 1; r < R; r++) {
+   463→   463→      const row: string[] = [];
+   464→   464→      for (let c = 0; c < C; c++) row.push(cells[refFor(c, r)] ?? "");
+   465→   465→      dataRows.push(row);
+   466→   466→    }
+   467→   467→    dataRows.sort((a, b) => {
+   468→   468→      const av = a[colIdx] ?? "", bv = b[colIdx] ?? "";
+   469→   469→      const an = parseFloat(av.replace(/[$,\s]/g, "")), bn = parseFloat(bv.replace(/[$,\s]/g, ""));
+   470→   470→      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * dir;
+   471→   471→      return av.localeCompare(bv) * dir;
+   472→   472→    });
+   473→   473→    const next: Record<string, string> = {};
+   474→   474→    for (let c = 0; c < C; c++) {
+   475→   475→      const h = cells[refFor(c, 0)];
+   476→   476→      if (h) next[refFor(c, 0)] = h;
+   477→   477→    }
+   478→   478→    dataRows.forEach((row, ri) => {
+   479→   479→      row.forEach((v, ci) => { if (v !== "") next[refFor(ci, ri + 1)] = v; });
+   480→   480→    });
+   481→   481→    setCells(next);
+   482→   482→  };
+   483→   483→
+   484→   484→  const dedupeRows = () => {
+   485→   485→    const { rows: R, cols: C } = usedRange(cells);
+   486→   486→    const seen = new Set<string>();
+   487→   487→    const next: Record<string, string> = {};
+   488→   488→    for (let c = 0; c < C; c++) { const h = cells[refFor(c, 0)]; if (h) next[refFor(c, 0)] = h; }
+   489→   489→    let kept = 0, removed = 0;
+   490→   490→    for (let r = 1; r < R; r++) {
+   491→   491→      const key = Array.from({ length: C }, (_, c) => displayValue(refFor(c, r), cells)).join("\u0001");
+   492→   492→      if (key.replace(/[\u0001]+$/g, "") === "") continue;
+   493→   493→      if (seen.has(key)) { removed++; continue; }
+   494→   494→      seen.add(key);
+   495→   495→      for (let c = 0; c < C; c++) { const v = cells[refFor(c, r)]; if (v) next[refFor(c, kept + 1)] = v; }
+   496→   496→      kept++;
+   497→   497→    }
+   498→   498→    setCells(next);
+   499→   499→    if (removed > 0) gridRef.current?.focus();
+   500→   500→  };
+   501→   501→
+   502→   502→  const colStats = React.useMemo(() => {
+   503→   503→    const stats: { n: number; sum: number; mean: number; median: number; std: number; min: number; max: number } | null = (() => {
+   504→   504→      const vals: number[] = [];
+   505→   505→      for (let r = 0; r < usedR; r++) {
+   506→   506→        const v = parseFloat(String(displayValue(refFor(selectedCol, r), cells)).replace(/[$,\s]/g, ""));
+   507→   507→        if (!isNaN(v) && String(displayValue(refFor(selectedCol, r), cells)) !== "") vals.push(v);
+   508→   508→      }
+   509→   509→      if (vals.length < 1) return null;
+   510→   510→      const sorted = [...vals].sort((a, b) => a - b);
+   511→   511→      const sum = vals.reduce((s, x) => s + x, 0);
+   512→   512→      const mean = sum / vals.length;
+   513→   513→      const mid = Math.floor(sorted.length / 2);
+   514→   514→      const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+   515→   515→      const std = sorted.length > 1 ? Math.sqrt(vals.reduce((s, x) => s + (x - mean) ** 2, 0) / (vals.length - 1)) : 0;
+   516→   516→      return { n: vals.length, sum, mean, median, std, min: sorted[0], max: sorted[sorted.length - 1] };
+   517→   517→    })();
+   518→   518→    return stats;
+   519→   519→  }, [cells, selectedCol, usedR]);
+   520→   520→
+   521→   521→  const transformCol = (mode: "trim" | "upper" | "lower" | "title") => {
+   522→   522→    const next = { ...cells };
+   523→   523→    for (let r = 0; r < usedR; r++) {
+   524→   524→      const ref = refFor(selectedCol, r);
+   525→   525→      const v = next[ref];
+   526→   526→      if (v === undefined || v.startsWith("=")) continue;
+   527→   527→      if (mode === "trim") next[ref] = v.trim();
+   528→   528→      if (mode === "upper") next[ref] = v.toUpperCase();
+   529→   529→      if (mode === "lower") next[ref] = v.toLowerCase();
+   530→   530→      if (mode === "title") next[ref] = v.toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
+   531→   531→    }
+   532→   532→    setCells(next);
+   533→   533→  };
+   534→   534→
+   535→   535→  const activeRaw = cells[active] ?? "";
+   536→   536→  const [ac, ar] = parseRef(active)!;
+   537→   537→
+   538→   538→  return (
+   539→   539→    <div className="space-y-4">
+   540→   540→      <ToolHeader
+   541→   541→        icon={<FileSpreadsheet className="h-5 w-5 text-emerald-400" />}
+   542→   542→        title="Excel Studio"
+   543→   543→        subtitle="Full spreadsheet with formula engine — SUM to SUMIF, stats, sort, dedupe, CSV in/out"
+   544→   544→        actions={
+   545→   545→          <>
+   546→   546→            <Select onValueChange={(v) => loadDataset(v)}>
+   547→   547→              <SelectTrigger className="w-[190px] border-white/15 bg-zinc-900 text-sm"><Database className="mr-1 h-4 w-4 text-emerald-400" /><SelectValue placeholder="Load sample data…" /></SelectTrigger>
+   548→   548→              <SelectContent className="border-white/10 bg-zinc-900">
+   549→   549→                {getAllDatasets().map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+   550→   550→                <SelectItem value="messy_sales">Retail Sales H2-2024 (Messy)</SelectItem>
+   551→   551→              </SelectContent>
+   552→   552→            </Select>
+   553→   553→            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} />
+   554→   554→            <Button variant="outline" size="sm" className="border-white/15 bg-transparent hover:bg-white/10" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" /> Import CSV</Button>
+   555→   555→            <Button variant="outline" size="sm" className="border-white/15 bg-transparent hover:bg-white/10" onClick={exportCSV}><Download className="h-4 w-4" /> Export CSV</Button>
+   556→   556→          </>
+   557→   557→        }
+   558→   558→      />
+   559→   559→
+   560→   560→      {/* formula bar */}
+   561→   561→      <div className="flex items-center gap-2">
+   562→   562→        <div className="flex h-9 w-20 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-black/40 font-mono text-sm font-bold text-emerald-300">{active}</div>
+   563→   563→        <div className="flex h-9 flex-1 items-center rounded-lg border border-white/15 bg-black/40 px-3 font-mono text-sm text-zinc-200">
+   564→   564→          <Sigma className="mr-2 h-3.5 w-3.5 shrink-0 text-zinc-500" />
+   565→   565→          <input
+   566→   566→            className="w-full bg-transparent outline-none placeholder:text-zinc-600"
+   567→   567→            placeholder="Type a value or =SUM(A1:A50)  ·  =IF(A2>100,&quot;Big&quot;,&quot;Small&quot;)"
+   568→   568→            value={editVal ?? activeRaw}
+   569→   569→            onChange={(e) => setEditVal(e.target.value)}
+   570→   570→            onKeyDown={(e) => {
+   571→   571→              if (e.key === "Enter") { commit(); gridRef.current?.focus(); }
+   572→   572→              if (e.key === "Escape") setEditVal(null);
+   573→   573→            }}
+   574→   574→            onFocus={() => { if (editVal === null) setEditVal(activeRaw); }}
+   575→   575→          />
+   576→   576→        </div>
+   577→   577→      </div>
+   578→   578→
+   579→   579→      {/* toolbar */}
+   580→   580→      <div className={`${PANEL} flex flex-wrap items-center gap-1.5 px-2 py-1.5 text-xs`}>
+   581→   581→        <span className="px-1 text-zinc-500">Sort col {colName(selectedCol)}:</span>
+   582→   582→        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, 1)}>A→Z</Button>
+   583→   583→        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, -1)}>Z→A</Button>
+   584→   584→        <span className="mx-1 h-4 w-px bg-white/10" />
+   585→   585→        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={dedupeRows}><Eraser className="mr-1 h-3 w-3" />Remove duplicate rows</Button>
+   586→   586→        <span className="mx-1 h-4 w-px bg-white/10" />
+   587→   587→        <span className="px-1 text-zinc-500">Text col {colName(selectedCol)}:</span>
+   588→   588→        {(["trim", "upper", "lower", "title"] as const).map((m) => (
+   589→   589→          <Button key={m} variant="ghost" size="sm" className="h-7 px-2 text-xs capitalize" onClick={() => transformCol(m)}><Wand2 className="mr-1 h-3 w-3" />{m}</Button>
+   590→   590→        ))}
+   591→   591→        <span className="mx-1 h-4 w-px bg-white/10" />
+   592→   592→        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-300 hover:bg-red-500/10" onClick={() => setCells({})}><Trash2 className="mr-1 h-3 w-3" />Clear sheet</Button>
+   593→   593→        <span className="ml-auto flex items-center gap-1.5">
+   594→   594→          <Input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="Sheet name" className="h-7 w-28 border-white/15 bg-black/30 text-xs" />
+   595→   595→          <Button variant="outline" size="sm" className="h-7 border-white/15 px-2 text-xs" onClick={() => sheetName && saveSheet(sheetName, cells)}><Save className="h-3 w-3" /> Save</Button>
+   596→   596→          {Object.keys(sheets).length > 0 && (
+   597→   597→            <Select onValueChange={(v) => { setCells(sheets[v].cells); setSheetName(v); }}>
+   598→   598→              <SelectTrigger className="h-7 w-[130px] border-white/15 bg-zinc-900 text-xs"><FolderOpen className="mr-1 h-3 w-3 text-emerald-400" /><SelectValue placeholder="Open saved…" /></SelectTrigger>
+   599→   599→              <SelectContent className="border-white/10 bg-zinc-900">
+   600→   600→                {Object.values(sheets).map((s) => (
+   601→   601→                  <SelectItem key={s.name} value={s.name}>
+   602→   602→                    <span className="flex items-center justify-between gap-2"><span>{s.name}</span><span className="text-[10px] text-zinc-500">{new Date(s.savedAt).toLocaleDateString()}</span></span>
+   603→   603→                  </SelectItem>
+   604→   604→                ))}
+   605→   605→              </SelectContent>
+   606→   606→            </Select>
+   607→   607→          )}
+   608→   608→        </span>
+   609→   609→      </div>
+   610→   610→
+   611→   611→      {/* grid + stats */}
+   612→   612→      <div className="flex flex-col gap-4 lg:flex-row">
+   613→   613→        <div
+   614→   614→          ref={gridRef}
+   615→   615→          tabIndex={0}
+   616→   616→          onKeyDown={onKey}
+   617→   617→          className={`${PANEL} flex-1 overflow-auto outline-none scrollbar-thin`} style={{ maxHeight: "62vh" }}
+   618→   618→        >
+   619→   619→          <table className="border-collapse text-[13px]" style={{ minWidth: viewCols * 96 }}>
+   620→   620→            <thead>
+   621→   621→              <tr className="sticky top-0 z-10 bg-zinc-900">
+   622→   622→                <th className="sticky left-0 z-20 w-10 border-b border-r border-white/10 bg-zinc-900 px-1 py-1.5 text-[10px] font-medium text-zinc-500" />
+   623→   623→                {Array.from({ length: viewCols }, (_, c) => (
+   624→   624→                  <th
+   625→   625→                    key={c}
+   626→   626→                    onClick={() => setSelectedCol(c)}
+   627→   627→                    className={`cursor-pointer border-b border-r border-white/10 px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+   628→   628→                      selectedCol === c ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-900 text-zinc-500 hover:bg-white/5"
+   629→   629→                    }`}
+   630→   630→                  >
+   631→   631→                    {colName(c)}
+   632→   632→                  </th>
+   633→   633→                ))}
+   634→   634→              </tr>
+   635→   635→            </thead>
+   636→   636→            <tbody>
+   637→   637→              {Array.from({ length: viewRows }, (_, r) => (
+   638→   638→                <tr key={r} className="group">
+   639→   639→                  <td className={`sticky left-0 z-10 w-10 border-b border-r border-white/10 bg-zinc-900 px-1 py-1 text-center text-[10px] font-medium ${active.endsWith(String(r + 1)) ? "text-emerald-300" : "text-zinc-500"}`}>{r + 1}</td>
+   640→   640→                  {Array.from({ length: viewCols }, (_, c) => {
+   641→   641→                    const ref = refFor(c, r);
+   642→   642→                    const isA = ref === active;
+   643→   643→                    const raw = cells[ref];
+   644→   644→                    const isFormula = !!raw?.startsWith("=");
+   645→   645→                    const disp = displayValue(ref, cells);
+   646→   646→                    const numeric = disp !== "" && !isNaN(parseFloat(disp.replace(/[$,\s]/g, "")));
+   647→   647→                    return (
+   648→   648→                      <td
+   649→   649→                        key={c}
+   650→   650→                        onClick={() => { if (editVal !== null && isA) return; commit(); setActive(ref); }}
+   651→   651→                        onDoubleClick={() => { setActive(ref); startEdit(); }}
+   652→   652→                        className={`relative h-[26px] max-w-[180px] cursor-cell overflow-hidden whitespace-nowrap border-b border-r border-white/[0.06] px-2 py-0.5 text-right transition-colors ${
+   653→   653→                          numeric ? "text-zinc-200" : "text-left text-zinc-300"
+   654→   654→                        } ${isA ? "outline outline-2 -outline-offset-1 outline-emerald-400" : selectedCol === c ? "bg-emerald-500/[0.04]" : "hover:bg-white/[0.03]"}`}
+   655→   655→                        style={{ minWidth: 96 }}
+   656→   656→                      >
+   657→   657→                        {isA && editVal !== null ? (
+   658→   658→                          <input
+   659→   659→                            autoFocus
+   660→   660→                            className="absolute inset-0 z-10 w-full bg-zinc-800 px-2 font-mono text-[12px] text-white outline outline-2 -outline-offset-1 outline-emerald-400"
+   661→   661→                            value={editVal}
+   662→   662→                            onChange={(e) => setEditVal(e.target.value)}
+   663→   663→                            onBlur={commit}
+   664→   664→                          />
+   665→   665→                        ) : (
+   666→   666→                          <span className={isFormula ? "italic" : ""}>{disp}</span>
+   667→   667→                        )}
+   668→   668→                        {isFormula && <span className="absolute left-0.5 top-0.5 h-1 w-1 rounded-full bg-sky-400/70" />}
+   669→   669→                      </td>
+   670→   670→                    );
+   671→   671→                  })}
+   672→   672→                </tr>
+   673→   673→              ))}
+   674→   674→            </tbody>
+   675→   675→          </table>
+   676→   676→        </div>
+   677→   677→
+   678→   678→        {/* stats + help */}
+   679→   679→        <div className="w-full shrink-0 space-y-3 lg:w-72">
+   680→   680→          <div className={PANEL}>
+   681→   681→            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Column stats — {colName(selectedCol)}</span></div>
+   682→   682→            <div className="p-3 text-[13px]">
+   683→   683→              {colStats ? (
+   684→   684→                <div className="space-y-1.5">
+   685→   685→                  {[
+   686→   686→                    ["Count", colStats.n], ["Sum", colStats.sum], ["Mean", colStats.mean],
+   687→   687→                    ["Median", colStats.median], ["Std dev", colStats.std], ["Min", colStats.min], ["Max", colStats.max],
+   688→   688→                  ].map(([k, v]) => (
+   689→   689→                    <div key={k as string} className="flex justify-between">
+   690→   690→                      <span className="text-zinc-500">{k as string}</span>
+   691→   691→                      <span className="font-mono text-zinc-200">{fmtNum(v as number)}</span>
+   692→   692→                    </div>
+   693→   693→                  ))}
+   694→   694→                  <p className="pt-1 text-[11px] leading-snug text-zinc-500">If mean ≫ median the column is right-skewed — report the median.</p>
+   695→   695→                </div>
+   696→   696→              ) : (
+   697→   697→                <p className="text-zinc-500">Select a column with numbers. Try loading sample data first.</p>
+   698→   698→              )}
+   699→   699→            </div>
+   700→   700→          </div>
+   701→   701→          <div className={PANEL}>
+   702→   702→            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Formula cheat-sheet</span></div>
+   703→   703→            <div className="space-y-1 p-3 font-mono text-[11px] leading-relaxed text-zinc-400">
+   704→   704→              <p><span className="text-emerald-300">=SUM(B2:B100)</span> · total</p>
+   705→   705→              <p><span className="text-emerald-300">=AVERAGE / MEDIAN / STDEV</span></p>
+   706→   706→              <p><span className="text-emerald-300">=SUMIF(E:E,"North",J:J)</span></p>
+   707→   707→              <p><span className="text-emerald-300">=COUNTIF(E:E,"&gt;500")</span></p>
+   708→   708→              <p><span className="text-emerald-300">=IF(J2&gt;1000,"Big","Small")</span></p>
+   709→   709→              <p><span className="text-emerald-300">=ROUND(J2/12, 2)</span> · <span className="text-emerald-300">&amp;</span> joins text</p>
+   710→   710→            </div>
+   711→   711→          </div>
+   712→   712→          {Object.keys(sheets).length > 0 && (
+   713→   713→            <div className={PANEL}>
+   714→   714→              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Saved sheets</span></div>
+   715→   715→              <div className="space-y-1 p-2">
+   716→   716→                {Object.values(sheets).map((s) => (
+   717→   717→                  <div key={s.name} className="flex items-center justify-between rounded-md px-2 py-1 text-xs text-zinc-300 hover:bg-white/5">
+   718→   718→                    <button className="flex-1 text-left" onClick={() => { setCells(s.cells); setSheetName(s.name); }}>{s.name}</button>
+   719→   719→                    <button className="text-zinc-500 hover:text-red-400" onClick={() => deleteSheet(s.name)}><Trash2 className="h-3 w-3" /></button>
+   720→   720→                  </div>
+   721→   721→                ))}
+   722→   722→              </div>
+   723→   723→            </div>
+   724→   724→          )}
+   725→   725→        </div>
+   726→   726→      </div>
+   727→   727→    </div>
+   728→   728→  );
+   729→   729→}
+   730→   730→
