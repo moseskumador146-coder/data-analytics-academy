@@ -6,6 +6,7 @@ import { persist } from "zustand/middleware";
 export type ViewId =
   | "home"
   | "paths"
+  | "functions"
   | "excel"
   | "dashboard"
   | "sql"
@@ -13,6 +14,12 @@ export type ViewId =
   | "automation"
   | "projects"
   | "workspace";
+
+export interface SavedDaxMeasure {
+  name: string;
+  formula: string;
+  createdAt: string;
+}
 
 export interface WorkspaceFile {
   path: string;
@@ -73,6 +80,7 @@ interface AcademyState {
   xp: number;
   sheets: Record<string, SavedSheet>;
   dashboards: SavedDashboard[];
+  daxMeasures: SavedDaxMeasure[];
   workspaceFiles: WorkspaceFile[];
   lastPathLevel: string;
   coachSteps: Record<string, string[]>;
@@ -89,6 +97,8 @@ interface AcademyState {
   deleteSheet: (name: string) => void;
   saveDashboard: (d: SavedDashboard) => void;
   deleteDashboard: (id: string) => void;
+  saveDaxMeasure: (name: string, formula: string) => void;
+  deleteDaxMeasure: (name: string) => void;
   addWorkspaceFiles: (files: Omit<WorkspaceFile, "createdAt">[], projectId?: string) => number;
   upsertWorkspaceFiles: (files: Omit<WorkspaceFile, "createdAt">[], projectId?: string) => { added: number; updated: number };
   removeWorkspaceFile: (path: string) => void;
@@ -108,6 +118,7 @@ export const useAcademy = create<AcademyState>()(
       xp: 0,
       sheets: {},
       dashboards: [],
+      daxMeasures: [],
       workspaceFiles: [],
       lastPathLevel: "beginner",
       coachSteps: {},
@@ -175,6 +186,15 @@ export const useAcademy = create<AcademyState>()(
         set({ dashboards: [d, ...get().dashboards.filter((x) => x.id !== d.id)].slice(0, 30) }),
       deleteDashboard: (id) =>
         set({ dashboards: get().dashboards.filter((x) => x.id !== id) }),
+      saveDaxMeasure: (name, formula) =>
+        set({
+          daxMeasures: [
+            { name, formula, createdAt: new Date().toISOString() },
+            ...get().daxMeasures.filter((m) => m.name.toLowerCase() !== name.toLowerCase()),
+          ].slice(0, 40),
+        }),
+      deleteDaxMeasure: (name) =>
+        set({ daxMeasures: get().daxMeasures.filter((m) => m.name.toLowerCase() !== name.toLowerCase()) }),
       addWorkspaceFiles: (files, projectId) => {
         const existing = new Set(get().workspaceFiles.map((f) => f.path));
         const fresh = files
@@ -219,6 +239,7 @@ export const useAcademy = create<AcademyState>()(
           workspaceFiles: [],
           sheets: {},
           dashboards: [],
+          daxMeasures: [],
           coachSteps: {},
         }),
     }),

@@ -4,6 +4,7 @@ import * as React from "react";
 import { useAcademy, levelFromXp, type ViewId } from "@/lib/academy/store";
 import { HomeView } from "@/components/academy/HomeView";
 import { PathsView } from "@/components/academy/PathsView";
+import { FunctionsView } from "@/components/academy/functions/FunctionsView";
 import { ExcelTool } from "@/components/academy/ExcelTool";
 import { DashboardTool } from "@/components/academy/DashboardTool";
 import { SqlTool } from "@/components/academy/SqlTool";
@@ -12,13 +13,14 @@ import { AutomationTool } from "@/components/academy/AutomationTool";
 import { ProjectsView } from "@/components/academy/ProjectsView";
 import { WorkspaceView } from "@/components/academy/WorkspaceView";
 import {
-  BarChart3, BookOpen, BrushCleaning, Database, FileSpreadsheet, FolderGit2, Home as HomeIcon, Moon, Package, Sun, Workflow, Zap,
+  BarChart3, BookOpen, BrushCleaning, Database, FileSpreadsheet, FolderGit2, Home as HomeIcon, Moon, Package, Sigma, Sun, Workflow, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV: { id: ViewId; label: string; icon: React.ReactNode }[] = [
   { id: "home", label: "Home", icon: <HomeIcon className="h-4 w-4" /> },
   { id: "paths", label: "Learning Paths", icon: <BookOpen className="h-4 w-4" /> },
+  { id: "functions", label: "Functions Lab", icon: <Sigma className="h-4 w-4" /> },
   { id: "excel", label: "Excel Studio", icon: <FileSpreadsheet className="h-4 w-4" /> },
   { id: "dashboard", label: "Dashboards", icon: <BarChart3 className="h-4 w-4" /> },
   { id: "sql", label: "SQL Playground", icon: <Database className="h-4 w-4" /> },
@@ -102,6 +104,7 @@ export default function Page() {
       <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-5 sm:px-6 sm:py-6">
         {view === "home" && <HomeView />}
         {view === "paths" && <PathsView />}
+        {view === "functions" && <FunctionsView />}
         {view === "excel" && <ExcelTool />}
         {view === "dashboard" && <DashboardTool />}
         {view === "sql" && <SqlTool />}
@@ -115,7 +118,7 @@ export default function Page() {
       <footer className="mt-auto border-t border-border bg-background">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-2 px-4 py-3.5 text-[11.5px] text-muted-foreground sm:px-6" style={{ paddingBottom: "calc(0.875rem + env(safe-area-inset-bottom))" }}>
           <p>Data Analytics Academy — learn, practice, build, ship. Everything runs locally in your browser; your progress saves automatically.</p>
-          <p className="font-mono">Excel · Power BI · SQL · Cleaning · ETL · Automation · GitHub</p>
+          <p className="font-mono">Excel · Power BI · SQL · Functions &amp; DAX · Cleaning · ETL · Automation · GitHub</p>
         </div>
       </footer>
     </div>

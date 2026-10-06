@@ -11,10 +11,11 @@ import { PATH_LEVELS, TOTAL_LESSONS } from "@/lib/academy/curriculum";
 import { PROJECTS } from "@/lib/academy/projects";
 import {
   ArrowRight, BookOpen, BrushCleaning, Database, FileSpreadsheet, FolderGit2, Github, GraduationCap,
-  Package, Rocket, Sparkles, Target, Workflow, BarChart3, Zap,
+  Package, Rocket, Sigma, Sparkles, Target, Workflow, BarChart3, Zap,
 } from "lucide-react";
 
 const TOOLS: { id: ViewId; icon: React.ReactNode; name: string; desc: string; color: string }[] = [
+  { id: "functions", icon: <Sigma className="h-5 w-5" />, name: "Functions Lab", desc: "Excel formulas, DAX measures, SQL functions — taught with live engines", color: "text-emerald-600 dark:text-emerald-400 border-amber-500/30 bg-amber-500/10" },
   { id: "excel", icon: <FileSpreadsheet className="h-5 w-5" />, name: "Excel Studio", desc: "Formula engine, SUMIF, stats, sort & dedupe, CSV in/out", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
   { id: "dashboard", icon: <BarChart3 className="h-5 w-5" />, name: "Dashboard Studio", desc: "Power BI-style builder: KPIs, charts, filters, saved dashboards", color: "text-sky-400 border-sky-500/30 bg-sky-500/10" },
   { id: "sql", icon: <Database className="h-5 w-5" />, name: "SQL Playground", desc: "Real SQL engine: JOINs, GROUP BY, HAVING, CTEs + 10 drills", color: "text-violet-400 border-violet-500/30 bg-violet-500/10" },
@@ -44,7 +45,7 @@ export function HomeView() {
           Data Analytics Academy — <span className="bg-gradient-to-r from-emerald-300 to-teal-400 bg-clip-text text-transparent">beginner to master</span>, by building real work.
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-muted-foreground">
-          {TOTAL_LESSONS} detailed lessons across 4 levels, 5 professional tools (Excel, BI dashboards, SQL, cleaning, automation) with live sample data,
+          {TOTAL_LESSONS} detailed lessons across 4 levels, 6 professional tools (Excel, DAX &amp; functions, BI dashboards, SQL, cleaning, automation) with live sample data,
           and {PROJECTS.length} real company projects that compile into a GitHub portfolio folder you download and ship.
         </p>
         <div className="mt-5 flex flex-wrap gap-2.5">
@@ -116,7 +117,7 @@ export function HomeView() {
       <div>
         <h2 className="flex items-center gap-2 text-lg font-bold text-foreground"><Workflow className="h-5 w-5 text-emerald-600 dark:text-emerald-400" /> Your free tool studio</h2>
         <p className="mt-1 text-[13px] text-muted-foreground/80">Everything a data analyst uses — rebuilt for the browser, instant and free.</p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {TOOLS.map((t) => (
             <button key={t.id} onClick={() => setView(t.id)} className="group rounded-xl border border-border bg-card/70 p-4 text-left transition-all hover:border-emerald-500/30 hover:bg-emerald-500/[0.04]">
               <div className={`flex h-10 w-10 items-center justify-center rounded-lg border ${t.color}`}>{t.icon}</div>
