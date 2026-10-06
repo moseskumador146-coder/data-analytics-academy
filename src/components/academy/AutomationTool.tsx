@@ -236,8 +236,8 @@ export function AutomationTool() {
         actions={
           <>
             <Select value={datasetId} onValueChange={(v) => { setDatasetId(v); setLogs([]); setOutput(null); }}>
-              <SelectTrigger className="w-[210px] border-white/15 bg-zinc-900 text-sm"><SelectValue /></SelectTrigger>
-              <SelectContent className="border-white/10 bg-zinc-900">
+              <SelectTrigger className="w-[210px] border-border bg-card text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent className="border-border bg-card">
                 {getAllDatasets().map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
                 <SelectItem value="messy_sales">Retail Sales H2-2024 (Messy)</SelectItem>
               </SelectContent>
@@ -254,20 +254,20 @@ export function AutomationTool() {
         <div className="space-y-3">
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Workflow className="h-3.5 w-3.5 text-violet-400" /> Pipeline steps</span>
-              <span className="text-[11px] text-zinc-500">{steps.length} steps</span>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Workflow className="h-3.5 w-3.5 text-violet-400" /> Pipeline steps</span>
+              <span className="text-[11px] text-muted-foreground/80">{steps.length} steps</span>
             </div>
             <div className="space-y-2 p-3">
               {steps.map((s, i) => (
-                <div key={s.id} className="group rounded-lg border border-white/10 bg-black/25 p-2.5">
+                <div key={s.id} className="group rounded-lg border border-border bg-black/25 p-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="flex items-center gap-2 text-[13px] font-semibold text-zinc-200">
+                    <p className="flex items-center gap-2 text-[13px] font-semibold text-foreground/90">
                       <span className="flex h-5 w-5 items-center justify-center rounded bg-violet-500/20 text-[11px] font-bold text-violet-300">{i + 1}</span>
                       {STEP_META[s.type].icon}<span>{STEP_META[s.type].label}</span>
                     </p>
-                    <button className="text-zinc-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100" onClick={() => setSteps((ss) => ss.filter((x) => x.id !== s.id))}><Trash2 className="h-3.5 w-3.5" /></button>
+                    <button className="text-muted-foreground/60 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100" onClick={() => setSteps((ss) => ss.filter((x) => x.id !== s.id))}><Trash2 className="h-3.5 w-3.5" /></button>
                   </div>
-                  <p className="mt-1 text-[11px] text-zinc-500">{STEP_META[s.type].desc}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground/80">{STEP_META[s.type].desc}</p>
                   {s.type === "validate" && (
                     <div className="mt-2">
                       <SelectParam label="Key column (non-null check)" value={s.col || ds.columns[0].key} onChange={(v) => update(s.id, { col: v })}>
@@ -281,8 +281,8 @@ export function AutomationTool() {
                         {ds.columns.map((c) => <SelectItem key={c.key} value={c.key}>{c.name}</SelectItem>)}
                       </SelectParam>
                       <div>
-                        <label className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-500">Contains</label>
-                        <Input value={s.value} onChange={(e) => update(s.id, { value: e.target.value })} className="h-8 border-white/15 bg-black/30 text-xs" placeholder="value…" />
+                        <label className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground/80">Contains</label>
+                        <Input value={s.value} onChange={(e) => update(s.id, { value: e.target.value })} className="h-8 border-border bg-black/30 text-xs" placeholder="value…" />
                       </div>
                     </div>
                   )}
@@ -303,7 +303,7 @@ export function AutomationTool() {
               ))}
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {(Object.keys(STEP_META) as StepType[]).map((t) => (
-                  <Button key={t} variant="outline" size="sm" className="h-7 border-white/10 px-2 text-[11px] hover:bg-violet-500/10 hover:text-violet-300" onClick={() => addStep(t)}>
+                  <Button key={t} variant="outline" size="sm" className="h-7 border-border px-2 text-[11px] hover:bg-violet-500/10 hover:text-violet-300" onClick={() => addStep(t)}>
                     <Plus className="h-3 w-3" />{STEP_META[t].label}
                   </Button>
                 ))}
@@ -313,7 +313,7 @@ export function AutomationTool() {
 
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-400"><FileCode2 className="h-3.5 w-3.5 text-violet-400" /> Generated Python</span>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><FileCode2 className="h-3.5 w-3.5 text-violet-400" /> Generated Python</span>
               <div className="flex gap-1">
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setShowCode(!showCode)}>{showCode ? "Hide" : "View"}</Button>
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => downloadFile("pipeline.py", pythonCode, "text/x-python")}><Download className="h-3 w-3" /></Button>
@@ -323,7 +323,7 @@ export function AutomationTool() {
               <pre className="max-h-72 overflow-auto bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-emerald-200/80 scrollbar-thin">{pythonCode}</pre>
             )}
             {!showCode && (
-              <p className="p-3 text-[11px] leading-relaxed text-zinc-500">
+              <p className="p-3 text-[11px] leading-relaxed text-muted-foreground/80">
                 Your visual pipeline compiles to a runnable pandas script — the same pattern used in production ETL jobs (Project 5).
               </p>
             )}
@@ -334,7 +334,7 @@ export function AutomationTool() {
         <div className="space-y-3">
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Bot className="h-3.5 w-3.5 text-violet-400" /> Run log</span>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Bot className="h-3.5 w-3.5 text-violet-400" /> Run log</span>
               {logs.length > 0 && (
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => downloadFile("pipeline.json", JSON.stringify({ dataset: datasetId, steps, lastRun: logs }, null, 2), "application/json")}>
                   <Braces className="h-3 w-3" /> Export run
@@ -342,13 +342,13 @@ export function AutomationTool() {
               )}
             </div>
             <div className="min-h-[220px] space-y-1.5 p-3 font-mono text-[12px]">
-              {logs.length === 0 && <p className="py-8 text-center text-zinc-600">Press ▶ Run pipeline — steps execute with live row counts and quality gates.</p>}
+              {logs.length === 0 && <p className="py-8 text-center text-muted-foreground/60">Press ▶ Run pipeline — steps execute with live row counts and quality gates.</p>}
               {logs.map((l, i) => (
-                <div key={i} className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${l.status === "fail" ? "bg-red-500/10 text-red-300" : "bg-white/[0.03] text-zinc-300"}`}>
+                <div key={i} className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${l.status === "fail" ? "bg-red-500/10 text-red-600 dark:text-red-300" : "bg-muted/40 text-foreground/80"}`}>
                   {l.status === "ok" ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />}
                   <span className="text-violet-300/80">{l.step}</span>
                   <span className="min-w-0 flex-1">{l.detail}</span>
-                  <span className="shrink-0 text-zinc-600">{l.ms}ms</span>
+                  <span className="shrink-0 text-muted-foreground/60">{l.ms}ms</span>
                 </div>
               ))}
             </div>
@@ -356,7 +356,7 @@ export function AutomationTool() {
 
           {output && output.length > 0 && (
             <div className={PANEL}>
-              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Pipeline output — aggregated result</span></div>
+              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pipeline output — aggregated result</span></div>
               <div className="p-3">
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={output} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -371,8 +371,8 @@ export function AutomationTool() {
                 </ResponsiveContainer>
                 <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {output.slice(0, 4).map((d) => (
-                    <div key={d.label} className="rounded-lg border border-white/10 bg-black/25 p-2.5">
-                      <p className="truncate text-[11px] text-zinc-500">{d.label}</p>
+                    <div key={d.label} className="rounded-lg border border-border bg-black/25 p-2.5">
+                      <p className="truncate text-[11px] text-muted-foreground/80">{d.label}</p>
                       <p className="text-sm font-bold text-white">{fmtNum(d.value)}</p>
                     </div>
                   ))}
@@ -391,10 +391,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function SelectParam({ label, value, onChange, children }: { label: string; value: string; onChange: (v: string) => void; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-[10px] uppercase tracking-wide text-zinc-500">{label}</label>
+      <label className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground/80">{label}</label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="h-8 border-white/15 bg-zinc-900 text-xs"><SelectValue /></SelectTrigger>
-        <SelectContent className="border-white/10 bg-zinc-900">{children}</SelectContent>
+        <SelectTrigger className="h-8 border-border bg-card text-xs"><SelectValue /></SelectTrigger>
+        <SelectContent className="border-border bg-card">{children}</SelectContent>
       </Select>
     </div>
   );

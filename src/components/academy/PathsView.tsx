@@ -58,12 +58,12 @@ export function PathsView() {
           <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10"><GraduationCap className="h-5 w-5 text-emerald-400" /></div>
           <div>
             <h1 className="text-lg font-bold tracking-tight text-white sm:text-xl">Learning Paths</h1>
-            <p className="text-[13px] text-zinc-400">Beginner → Master · {PATH_LEVELS.length} levels · {flat.length} lessons · ~{Math.round(totalMin / 60)} hours of material</p>
+            <p className="text-[13px] text-muted-foreground">Beginner → Master · {PATH_LEVELS.length} levels · {flat.length} lessons · ~{Math.round(totalMin / 60)} hours of material</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <p className="text-[11px] uppercase tracking-wide text-zinc-500">Your progress</p>
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground/80">Your progress</p>
             <p className="text-sm font-bold text-emerald-300">{doneCount}/{flat.length} lessons</p>
           </div>
           <div className="w-32"><Progress value={(doneCount / flat.length) * 100} className="h-2" /></div>
@@ -82,20 +82,20 @@ export function PathsView() {
                 <button className="w-full px-4 py-3 text-left" onClick={() => setOpenLevel(open ? "" : level.id)}>
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <p className={`flex items-center gap-2 text-sm font-bold ${open ? c.text : "text-zinc-200"}`}>
+                      <p className={`flex items-center gap-2 text-sm font-bold ${open ? c.text : "text-foreground/90"}`}>
                         <span className={`h-2 w-2 rounded-full ${c.dot}`} />{level.title}
                       </p>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-500">{level.duration} · {level.modules.length} modules</p>
+                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80">{level.duration} · {level.modules.length} modules</p>
                     </div>
                     <Badge variant="outline" className={`${c.bg} border-0 text-[10px] ${c.text}`}>{prog.done}/{prog.total}</Badge>
                   </div>
                   {open && <Progress value={prog.pct} className="mt-2 h-1" />}
                 </button>
                 {open && (
-                  <div className="border-t border-white/5 px-2 pb-2">
+                  <div className="border-t border-border/60 px-2 pb-2">
                     {level.modules.map((m) => (
                       <div key={m.id} className="mt-2">
-                        <p className="px-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">{m.title}</p>
+                        <p className="px-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80">{m.title}</p>
                         {m.lessons.map((ls, li) => {
                           const done = !!completedLessons[ls.id];
                           const active = lessonId === ls.id;
@@ -104,12 +104,12 @@ export function PathsView() {
                               key={ls.id}
                               onClick={() => openLesson(ls.id)}
                               className={`mt-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors ${
-                                active ? "bg-emerald-500/15 text-emerald-200" : done ? "text-zinc-500 hover:bg-white/5" : "text-zinc-300 hover:bg-white/5"
+                                active ? "bg-emerald-500/15 text-emerald-200" : done ? "text-muted-foreground/80 hover:bg-muted/60" : "text-foreground/80 hover:bg-muted/60"
                               }`}
                             >
-                              {done ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" /> : active ? <BookOpen className="h-3.5 w-3.5 shrink-0 text-emerald-300" /> : <Circle className="h-3 w-3 shrink-0 text-zinc-600" />}
+                              {done ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" /> : active ? <BookOpen className="h-3.5 w-3.5 shrink-0 text-emerald-300" /> : <Circle className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
                               <span className="min-w-0 flex-1 truncate">{li + 1}. {ls.title}</span>
-                              <span className="shrink-0 text-[10px] text-zinc-600">{ls.minutes}m</span>
+                              <span className="shrink-0 text-[10px] text-muted-foreground/60">{ls.minutes}m</span>
                             </button>
                           );
                         })}
@@ -126,13 +126,13 @@ export function PathsView() {
         <div id="lesson-content">
           {lesson && (
             <div className={`${PANEL} scroll-mt-20`}>
-              <div className="border-b border-white/10 px-5 py-4 sm:px-7">
+              <div className="border-b border-border px-5 py-4 sm:px-7">
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                   <Badge variant="outline" className={`${LEVEL_COLORS[flat[lessonIdx].level].bg} border-0 text-[10px] ${LEVEL_COLORS[flat[lessonIdx].level].text}`}>
                     {PATH_LEVELS.find((l) => l.id === flat[lessonIdx].level)?.title}
                   </Badge>
-                  <span className="flex items-center gap-1 text-zinc-500"><Clock className="h-3 w-3" />{lesson.minutes} min read</span>
-                  <span className="text-zinc-500">+10 XP</span>
+                  <span className="flex items-center gap-1 text-muted-foreground/80"><Clock className="h-3 w-3" />{lesson.minutes} min read</span>
+                  <span className="text-muted-foreground/80">+10 XP</span>
                 </div>
                 <h2 className="mt-2 text-xl font-bold tracking-tight text-white sm:text-2xl">{lesson.title}</h2>
               </div>
@@ -141,12 +141,12 @@ export function PathsView() {
                 <Md text={lesson.content} />
               </div>
 
-              <div className="space-y-4 border-t border-white/10 px-5 py-4 sm:px-7">
+              <div className="space-y-4 border-t border-border px-5 py-4 sm:px-7">
                 <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] p-4">
                   <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-emerald-300"><ListChecks className="h-4 w-4" /> Key takeaways</p>
                   <ul className="mt-2 space-y-1.5">
                     {lesson.takeaways.map((t, i) => (
-                      <li key={i} className="flex gap-2 text-[14px] text-zinc-200"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />{t}</li>
+                      <li key={i} className="flex gap-2 text-[14px] text-foreground/90"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />{t}</li>
                     ))}
                   </ul>
                 </div>
@@ -158,10 +158,10 @@ export function PathsView() {
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 px-5 py-3 sm:px-7">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-5 py-3 sm:px-7">
                 <div className="flex gap-2">
                   {prev && (
-                    <Button variant="outline" size="sm" className="border-white/15" onClick={() => openLesson(prev.id)}>
+                    <Button variant="outline" size="sm" className="border-border" onClick={() => openLesson(prev.id)}>
                       <ChevronLeft className="h-4 w-4" /> Previous
                     </Button>
                   )}
@@ -174,7 +174,7 @@ export function PathsView() {
                   </Button>
                 </div>
                 {next ? (
-                  <Button variant="outline" size="sm" className="border-white/15" onClick={() => { if (!isDone) toggleLesson(lesson.id); openLesson(next.id); }}>
+                  <Button variant="outline" size="sm" className="border-border" onClick={() => { if (!isDone) toggleLesson(lesson.id); openLesson(next.id); }}>
                     Next lesson <ChevronRight className="h-4 w-4" />
                   </Button>
                 ) : (
@@ -187,10 +187,10 @@ export function PathsView() {
           {/* level outcomes */}
           {lesson && (
             <div className={`${PANEL} mt-4 p-5`}>
-              <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-zinc-400"><Target className="h-4 w-4 text-emerald-400" /> What you will be able to do after this level</p>
+              <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground"><Target className="h-4 w-4 text-emerald-400" /> What you will be able to do after this level</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 {PATH_LEVELS.find((l) => l.id === flat[lessonIdx].level)?.outcomes.map((o, i) => (
-                  <div key={i} className="flex gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-[13px] text-zinc-300">
+                  <div key={i} className="flex gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[13px] text-foreground/80">
                     <Layers3 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400/70" />{o}
                   </div>
                 ))}

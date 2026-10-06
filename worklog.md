@@ -31,3 +31,20 @@ Stage Summary:
 - All processing is client-side (zero delays); progress persists in localStorage
 - Key artifacts: 84-lesson curriculum, 7 portfolio-generating projects, 5 professional tools, custom SQL engine with CTE support, ZIP export + GitHub publish guide
 - Verification: lint clean, zero runtime errors, all golden-path flows browser-verified, SQL engine regression-tested via scripts/test-sql.ts, test-project-sql.ts, test-portfolio.ts
+
+---
+Task ID: 2
+Agent: Main agent (Super Z)
+Task: Polish round — standardize Excel/SQL/Power BI tools, add more sample data files (huge + medium, messy), teach at every stage, white (light) interface with dark/light toggle.
+
+Work Log:
+- Theme: default switched to light (white); layout.tsx pre-hydration script reads localStorage 'aaa-theme' (no flash, no hydration mismatch); migrated 115 hardcoded dark classes to semantic tokens in HomeView/PathsView/ProjectsView/WorkspaceView/AutomationTool; verified light+dark in browser incl. mobile 390px
+- Datasets: added 3 new sample files — bank_transactions (8,187 rows HUGE messy: 3 date formats, $-text, negatives, dup submissions), deliveries (2,400 LARGE messy: supplier case-variants, missing dates, $-text freight), app_events (11,000 HUGE clean clickstream); fixed messy badge detection; catalog now 15 files
+- Excel: ribbon tabs (Home/Formulas/Data); Formulas tab inserts 17 starter formulas; status bar (Ready/Editing, cell, Count/Numeric/Sum/Average of selected col); Excel-standard bottom sheet tabs (open/save/delete); Ctrl+D fill down; engine: full-column refs (F:F), full-row refs (2:4), IFERROR/IFNA lazy eval, AVERAGEIF, SUMIFS, COUNTIFS, XLOOKUP, INDEX, MATCH, ROUNDUP, ROUNDDOWN; mission updated to teach new UI
+- SQL: "Import a data file as a table" — any sample file becomes queryable (types inferred, blanks→NULL, $-text→numbers, capped 4k rows); imported tables removable, shown violet in schema browser; auto-loads SELECT preview; mission adds "Query a raw file" teaching step
+- Power BI: 2 new visuals — scatter (X/Y measures) and bar+line combo (dual axis, Legend); widget.size S/M/L col-span control; Undo button + Ctrl+Z (24-step stack); second-measure field wells; verified KPI math ($172.9k / 340 / $508.65)
+- Fixed pre-existing CleanerTool TS error (R.region narrowing); Excel imports Plus/-Database; SqlTool downloadDatasetCSV import restored
+- Verification: tsc clean, eslint clean, 13/13 SQL regression queries pass, 5/5 project SQL files run, 15 datasets build, portfolio ZIP 49 files/173KB OK; browser-verified: light+dark home/paths/dashboard/excel, dataset load via Radix picker, SUMIF full-column (26,297.15), XLOOKUP fallback, SQL Ctrl+Enter, GROUP BY over imported messy table (AcmeParts vs acmeparts teaching moment), undo, theme toggle+persist, mobile layout
+
+Stage Summary:
+- All three flagship tools (Excel/SQL/Power BI) now match industry-standard UX patterns and are fully functional; 15 practice files across Small→Huge, clean→messy; every tool teaches via Coach missions + live tips; white interface is the default with persisted dark toggle

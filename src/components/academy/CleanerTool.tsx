@@ -208,13 +208,14 @@ export function CleanerTool() {
       {
         id: "regions", label: "Standardize categories", desc: R.region ? `Map ${R.region} variants → canonical values` : "Map region variants → canonical",
         run: () => apply("regions", "Standardized categories", (rs) => {
-          if (!R.region) return { rows: rs, detail: "no category-like column found" };
+          const rc = R.region;
+          if (!rc) return { rows: rs, detail: "no category-like column found" };
           let n = 0;
           const out = rs.map((r) => {
-            const raw = String(r[R.region] ?? "");
+            const raw = String(r[rc] ?? "");
             const canon = CANON_REGIONS[raw.trim().toLowerCase()] ?? raw.trim().toUpperCase();
             if (canon && canon !== raw) n++;
-            return { ...r, [R.region]: raw.trim() === "" ? raw : canon };
+            return { ...r, [rc]: raw.trim() === "" ? raw : canon };
           });
           return { rows: out, detail: `${n} values mapped to canonical categories` };
         }),

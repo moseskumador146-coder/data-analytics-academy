@@ -40,12 +40,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning className="dark">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script
-          // Apply saved theme before first paint to avoid flash + hydration mismatch
+          // Apply saved theme before first paint (default = white/light) — avoids flash + hydration mismatch
           dangerouslySetInnerHTML={{
-            __html: `try{var t=localStorage.getItem("aaa-theme");if(t==="light"){document.documentElement.classList.remove("dark")}}catch(e){}`,
+            __html: `try{var t=localStorage.getItem("aaa-theme");if(t!=="light"&&t!=="dark")t="light";document.documentElement.classList.toggle("dark",t==="dark");document.documentElement.style.colorScheme=t}catch(e){document.documentElement.style.colorScheme="light"}`,
           }}
         />
       </head>

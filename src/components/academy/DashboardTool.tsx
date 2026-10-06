@@ -18,16 +18,17 @@ import { useAcademy, type SavedDashboard } from "@/lib/academy/store";
 import { getDatasetById, downloadFile, type Dataset, type Row } from "@/lib/academy/datasets";
 import {
   BarChart3, ChartPie, ChevronLeft, ChevronRight, Columns3, Download, Gauge, LayoutDashboard,
-  LineChart as LineIcon, Link2, Plus, Save, Sigma, SlidersHorizontal, Sparkles, Table2, Trash2, TrendingUp, Copy,
+  LineChart as LineIcon, Link2, Plus, Save, Sigma, SlidersHorizontal, Sparkles, Table2, Trash2, TrendingUp, Copy, Activity, Undo2,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip as RTooltip, Legend, ScatterChart, Scatter, ComposedChart,
 } from "recharts";
 
 /* ================= model ================= */
 type Agg = "sum" | "avg" | "count" | "min" | "max";
-type WType = "kpi" | "bar" | "line" | "area" | "pie" | "donut" | "table" | "slicer";
+type WType = "kpi" | "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "combo" | "table" | "slicer";
+type WSize = "sm" | "md" | "lg";
 
 interface Widget {
   id: string;
@@ -35,12 +36,16 @@ interface Widget {
   title: string;
   dimension: string;
   measure: string;
+  /** second measure — used by scatter (Y axis) and combo (line series) */
+  measure2?: string;
   agg: Agg;
   topN: number;
   filterCol: string;
   filterVal: string;
   color?: number;
   showTitle?: boolean;
+  /** canvas footprint */
+  size?: WSize;
   /** slicer only */
   field?: string;
   selected?: string[];
@@ -68,9 +73,13 @@ const WTYPE_META: Record<WType, { label: string; icon: React.ReactNode; blurb: s
   area: { label: "Area chart", icon: <TrendingUp className="h-4 w-4" />, blurb: "Volume over time" },
   pie: { label: "Pie chart", icon: <ChartPie className="h-4 w-4" />, blurb: "Parts of a whole (≤5 slices)" },
   donut: { label: "Donut chart", icon: <ChartPie className="h-4 w-4" />, blurb: "Parts of a whole with a center gap" },
+  scatter: { label: "Scatter plot", icon: <Activity className="h-4 w-4" />, blurb: "Relationship between two measures" },
+  combo: { label: "Bar + line combo", icon: <TrendingUp className="h-4 w-4" />, blurb: "Two measures, two scales — Power BI classic" },
   table: { label: "Table", icon: <Table2 className="h-4 w-4" />, blurb: "The 5-minute detail layer" },
   slicer: { label: "Slicer", icon: <SlidersHorizontal className="h-4 w-4" />, blurb: "Filters every visual on this page" },
 };
+
+const SIZE_CLS: Record<WSize, string> = { sm: "xl:col-span-1", md: "xl:col-span-1", lg: "xl:col-span-2" };
 
 function newWidget(type: WType, ds: Dataset): Widget {
   const numericCols = ds.columns.filter((c) => c.type === "number" || c.type === "currency");
@@ -87,12 +96,17 @@ function newWidget(type: WType, ds: Dataset): Widget {
     filterVal: "",
     color: 0,
     showTitle: true,
+    size: "md",
   };
   if (type === "kpi") w.title = numericCols[0]?.name ?? "Total";
   if (type === "slicer") { w.field = dimCols[0]?.key ?? ds.columns[0].key; w.title = "Slicer"; w.selected = []; }
   if (type === "line" || type === "area") {
     const dateCol = ds.columns.find((c) => c.type === "date");
     if (dateCol) w.dimension = dateCol.key;
+  }
+  if (type === "scatter" || type === "combo") {
+    w.measure2 = numericCols[1]?.key ?? numericCols[0]?.key ?? ds.columns[0].key;
+    if (type === "combo") w.title = "Revenue and orders";
   }
   return w;
 }
@@ -147,9 +161,23 @@ function aggregate(ds: Dataset, w: Widget, pageFilters: PageFilter[] = []): { la
     else if (w.agg === "avg") value = rs.length ? rs.reduce((s, r) => s + measureNum(r), 0) / rs.length : 0;
     else if (w.agg === "min") value = Math.min(...rs.map(measureNum));
     else value = Math.max(...rs.map(measureNum));
-    return { label, value: +value.toFixed(2) };
+    let value2: number | undefined;
+    if (w.measure2) {
+      const m2 = (r: Row) => {
+        const v = r[w.measure2!];
+        const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[$,\s]/g, ""));
+        return isNaN(n) ? 0 : n;
+      };
+      value2 = w.agg === "count" ? rs.length
+        : w.agg === "sum" ? rs.reduce((s, r) => s + m2(r), 0)
+        : w.agg === "avg" ? (rs.length ? rs.reduce((s, r) => s + m2(r), 0) / rs.length : 0)
+        : w.agg === "min" ? Math.min(...rs.map(m2))
+        : Math.max(...rs.map(m2));
+      value2 = +value2.toFixed(2);
+    }
+    return { label, value: +value.toFixed(2), ...(value2 !== undefined ? { value2 } : {}) };
   });
-  if (w.type !== "line" && w.type !== "area") out.sort((a, b) => b.value - a.value);
+  if (w.type !== "line" && w.type !== "area" && w.type !== "combo") out.sort((a, b) => b.value - a.value);
   else out.sort((a, b) => a.label.localeCompare(b.label));
   if (w.topN > 0) out = out.slice(0, w.topN);
   return out;
@@ -210,13 +238,39 @@ export function DashboardTool() {
   const update = (id: string, patch: Partial<Widget>) =>
     updatePage({ widgets: page.widgets.map((w) => (w.id === id ? { ...w, ...patch } : w)) });
 
+  /* undo — Power BI has it, so do we (Ctrl+Z works too) */
+  const undoStack = React.useRef<Page[][]>([]);
+  const pushUndo = () => {
+    undoStack.current = [...undoStack.current.slice(-24), pages.map((p) => ({ ...p, widgets: [...p.widgets] }))];
+  };
+  const undo = () => {
+    const prev = undoStack.current.pop();
+    if (prev) {
+      setPages(prev);
+      setActivePage((a) => Math.min(a, prev.length - 1));
+      setSelectedId(null);
+    }
+  };
+  React.useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && view === "report") {
+        e.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  });
+
   const addWidget = (type: WType) => {
+    pushUndo();
     const w = newWidget(type, ds);
     updatePage({ widgets: [...page.widgets, w] });
     setSelectedId(w.id);
   };
 
   const removeWidget = (id: string) => {
+    pushUndo();
     updatePage({ widgets: page.widgets.filter((w) => w.id !== id) });
     if (selectedId === id) setSelectedId(null);
   };
@@ -390,6 +444,35 @@ export function DashboardTool() {
         </div>
       );
     }
+    if (w.type === "scatter") {
+      return (
+        <ResponsiveContainer width="100%" height={260}>
+          <ScatterChart margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
+            <XAxis type="number" dataKey="value" name={measureCol?.name ?? "X"} tick={{ fill: "var(--chart-axis)", fontSize: 11 }} tickFormatter={axis} />
+            <YAxis type="number" dataKey="value2" name={ds.columns.find((c) => c.key === w.measure2)?.name ?? "Y"} tick={{ fill: "var(--chart-axis)", fontSize: 11 }} tickFormatter={axis} width={56} />
+            <RTooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3" }} formatter={(v: number, n: string) => [fmtVal(v, n === (measureCol?.name ?? "X") ? money : false), n]} labelFormatter={() => ""} />
+            <Scatter data={data} fill={color} />
+          </ScatterChart>
+        </ResponsiveContainer>
+      );
+    }
+    if (w.type === "combo") {
+      return (
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
+            <XAxis dataKey="label" tick={{ fill: "var(--chart-axis)", fontSize: 11 }} interval={0} angle={data.length > 6 ? -20 : 0} textAnchor={data.length > 6 ? "end" : "middle"} height={data.length > 6 ? 50 : 30} />
+            <YAxis yAxisId="left" tick={{ fill: "var(--chart-axis)", fontSize: 11 }} tickFormatter={axis} width={56} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fill: "var(--chart-axis)", fontSize: 11 }} tickFormatter={axis} width={48} />
+            <RTooltip contentStyle={tooltipStyle} formatter={(v: number) => fmtVal(v, money)} />
+            <Legend wrapperStyle={{ fontSize: 11, color: "var(--chart-axis)" }} />
+            <Bar yAxisId="left" dataKey="value" name={measureCol?.name ?? "Values"} radius={[4, 4, 0, 0]} fill={color} />
+            <Line yAxisId="right" type="monotone" dataKey="value2" name={ds.columns.find((c) => c.key === w.measure2)?.name ?? "Series 2"} stroke={PALETTE[(w.color ?? 0) + 3 % PALETTE.length]} strokeWidth={2} dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      );
+    }
     if (w.type === "slicer") return null;
     return (
       <ResponsiveContainer width="100%" height={260}>
@@ -517,8 +600,11 @@ export function DashboardTool() {
       {selected && selected.type !== "slicer" ? (
         <div className="space-y-2.5 border-b border-border p-3">
           <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Field wells — {WTYPE_META[selected.type].label}</p>
-          <Well label={selected.type === "kpi" ? "Field" : "Axis"} value={selected.dimension} onChange={(v) => update(selected.id, { dimension: v })} cols={ds.columns} />
-          <Well label="Values" value={selected.measure} onChange={(v) => update(selected.id, { measure: v })} cols={ds.columns} />
+          <Well label={selected.type === "kpi" ? "Field" : selected.type === "scatter" ? "X axis (measure)" : "Axis"} value={selected.dimension} onChange={(v) => update(selected.id, { dimension: v })} cols={ds.columns} />
+          <Well label={selected.type === "scatter" ? "Y axis (measure)" : "Values"} value={selected.measure} onChange={(v) => update(selected.id, { measure: v })} cols={ds.columns} />
+          {(selected.type === "scatter" || selected.type === "combo") && (
+            <Well label={selected.type === "combo" ? "Line series" : "Y axis (second measure)"} value={selected.measure2 ?? ""} onChange={(v) => update(selected.id, { measure2: v })} cols={ds.columns} />
+          )}
           <div>
             <label className="mb-1 block text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">Aggregation</label>
             <div className="flex flex-wrap gap-1">
@@ -543,6 +629,17 @@ export function DashboardTool() {
               </div>
             </div>
           )}
+          <div>
+            <label className="mb-1 block text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground">Size on canvas</label>
+            <div className="flex flex-wrap gap-1">
+              {(["sm", "md", "lg"] as WSize[]).map((s) => (
+                <button key={s} onClick={() => update(selected.id, { size: s })}
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase transition-colors ${(selected.size ?? "md") === s ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground hover:bg-muted"}`}>
+                  {s === "sm" ? "Small" : s === "md" ? "Medium" : "Large (full width)"}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -693,6 +790,7 @@ export function DashboardTool() {
         <Input value={name} onChange={(e) => setName(e.target.value)} className="h-8 w-52 border-border bg-background/60 text-sm" placeholder="Report name" aria-label="Report name" />
         <Button variant="outline" size="sm" className="h-8 border-border" onClick={save}><Save className="h-3.5 w-3.5" /> Save</Button>
         <Button variant="outline" size="sm" className="h-8 border-border" onClick={exportJson}><Download className="h-3.5 w-3.5" /> Export JSON</Button>
+        <Button variant="outline" size="sm" className="h-8 border-border" onClick={undo} title="Undo (Ctrl+Z)"><Undo2 className="h-3.5 w-3.5" /> Undo</Button>
         {dashboards.length > 0 && (
           <Select onValueChange={(id) => { const d = dashboards.find((x) => x.id === id); if (d) loadSaved(d); }}>
             <SelectTrigger className="h-8 w-[170px] border-border bg-card text-xs"><SelectValue placeholder="Open saved…" /></SelectTrigger>
@@ -759,7 +857,7 @@ export function DashboardTool() {
                           <SlicerCard w={w} />
                         </div>
                       ) : (
-                        <div key={w.id} className={`${PANEL} group ${selectedId === w.id ? "outline outline-2 outline-offset-0 outline-emerald-500" : ""}`}>
+                        <div key={w.id} className={`${PANEL} group ${SIZE_CLS[w.size ?? "md"]} ${selectedId === w.id ? "outline outline-2 outline-offset-0 outline-emerald-500" : ""}`}>
                           <div className={PANEL_HEAD}>
                             <p className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{w.showTitle === false ? "" : w.title}</p>
                             <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">

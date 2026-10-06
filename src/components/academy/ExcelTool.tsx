@@ -14,7 +14,7 @@ import { useAcademy } from "@/lib/academy/store";
 import { getDatasetById, downloadFile, type Row } from "@/lib/academy/datasets";
 import Papa from "papaparse";
 import {
-  ArrowDownToLine, Database, Download, Eraser, FileSpreadsheet, Save, Sigma, Trash2, Upload, Wand2, FolderOpen,
+  ArrowDownToLine, Download, Eraser, FileSpreadsheet, Plus, Save, Sigma, Trash2, Upload, Wand2,
 } from "lucide-react";
 
 /* ================= formula engine ================= */
@@ -129,12 +129,30 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
       pos++;
       return s;
     }
+    /* full-column refs: F:F · $F:$F  →  whole column range */
+    const colRange = /^\$?([A-Za-z])\$?\s*:\s*\$?([A-Za-z])\$?(?!\d)/.exec(src.slice(pos));
+    if (colRange) {
+      const c1 = colRange[1].toUpperCase().charCodeAt(0) - 65;
+      const c2 = colRange[2].toUpperCase().charCodeAt(0) - 65;
+      pos += colRange[0].length;
+      if (c1 >= COLS || c2 >= COLS) throw new FormulaError("#REF!");
+      return rangeBox(refFor(Math.min(c1, c2), 0), refFor(Math.max(c1, c2), ROWS - 1), cells, stack);
+    }
+    /* full-row refs: 2:4 → whole-row range */
+    const rowRange = /^\$?(\d+)\s*:\s*\$?(\d+)/.exec(src.slice(pos));
+    if (rowRange) {
+      const r1 = Math.max(0, Math.min(+rowRange[1], +rowRange[2]) - 1);
+      const r2 = Math.min(ROWS - 1, Math.max(+rowRange[1], +rowRange[2]) - 1);
+      pos += rowRange[0].length;
+      return rangeBox(refFor(0, r1), refFor(COLS - 1, r2), cells, stack);
+    }
     const numMatch = /^\d+(\.\d+)?/.exec(src.slice(pos));
     if (numMatch) { pos += numMatch[0].length; return parseFloat(numMatch[0]); }
     const fnMatch = /^([A-Z][A-Z0-9.]*)\(/i.exec(src.slice(pos));
     if (fnMatch) {
       const name = fnMatch[1].toUpperCase();
       pos += fnMatch[0].length;
+      if (name === "IFERROR" || name === "IFNA") return parseIfError(name);
       const args: Arg[] = [];
       if (src[pos] === ")") pos++;
       else {
@@ -168,6 +186,22 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
 
   function parseArg(): Arg {
     ws();
+    /* full-column / full-row refs */
+    const colRange = /^\$?([A-Za-z])\$?\s*:\s*\$?([A-Za-z])\$?(?!\d)/.exec(src.slice(pos));
+    if (colRange) {
+      const c1 = colRange[1].toUpperCase().charCodeAt(0) - 65;
+      const c2 = colRange[2].toUpperCase().charCodeAt(0) - 65;
+      pos += colRange[0].length;
+      if (c1 >= COLS || c2 >= COLS) throw new FormulaError("#REF!");
+      return rangeBox(refFor(Math.min(c1, c2), 0), refFor(Math.max(c1, c2), ROWS - 1), cells, stack);
+    }
+    const rowRange = /^\$?(\d+)\s*:\s*\$?(\d+)/.exec(src.slice(pos));
+    if (rowRange) {
+      const r1 = Math.max(0, Math.min(+rowRange[1], +rowRange[2]) - 1);
+      const r2 = Math.min(ROWS - 1, Math.max(+rowRange[1], +rowRange[2]) - 1);
+      pos += rowRange[0].length;
+      return rangeBox(refFor(0, r1), refFor(COLS - 1, r2), cells, stack);
+    }
     const startRef = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
     if (startRef) {
       const ref = startRef[0].toUpperCase();
@@ -183,6 +217,54 @@ function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set
     }
     const v = parseExpr();
     return { kind: "value", v };
+  }
+
+  /* IFERROR / IFNA need lazy evaluation: the fallback must only be parsed when
+     the main argument actually throws. Implemented at the parser level. */
+  function argValue(a: Arg): Val {
+    return a.kind === "value" ? a.v : a.values[0] ?? "";
+  }
+  function skipToCommaOrClose(): void {
+    let depth = 0;
+    while (pos < src.length) {
+      const ch = src[pos];
+      if (ch === "(") depth++;
+      else if (ch === ")") { if (depth === 0) return; depth--; }
+      else if (ch === "," && depth === 0) return;
+      pos++;
+    }
+  }
+  function parseIfError(name: "IFERROR" | "IFNA"): Val {
+    ws();
+    const start = pos;
+    let main: Arg | null = null;
+    let failed: unknown = null;
+    try {
+      main = parseArg();
+    } catch (e) {
+      failed = e;
+      pos = start;
+      skipToCommaOrClose();
+    }
+    const isNa = failed instanceof FormulaError && failed.message === "#N/A";
+    if (failed && name === "IFNA" && !isNa) throw failed;
+    if (main) {
+      ws();
+      if (src[pos] === ",") {
+        pos++;
+        try { parseArg(); } catch { /* fallback errored — main value still wins */ skipToCommaOrClose(); }
+      }
+      ws();
+      if (src[pos] === ")") pos++;
+      return argValue(main);
+    }
+    ws();
+    if (src[pos] !== ",") throw failed; // no fallback → surface the error
+    pos++;
+    const fb = parseArg();
+    ws();
+    if (src[pos] === ")") pos++;
+    return argValue(fb);
   }
 
   const v = parseExpr();
@@ -345,6 +427,7 @@ function callFn(name: string, args: Arg[]): Val {
       return parts.join(sep);
     }
     case "SUMIF":
+    case "AVERAGEIF":
     case "COUNTIF": {
       const rangeArg = args[0];
       const critArg = args[1];
@@ -379,14 +462,134 @@ function callFn(name: string, args: Arg[]): Val {
       const vals = rangeArg.kind === "range" ? rangeArg.values : [String(rangeArg.v)];
       const sums = sumRange ? (sumRange.kind === "range" ? sumRange.values : [String(sumRange.v)]) : vals;
       let s = 0;
+      let matched = 0;
       vals.forEach((v, i) => {
         if (v !== "" && test(v)) {
           const n = parseFloat(String(sums[i] ?? "").replace(/[$,\s]/g, ""));
-          if (!isNaN(n)) s += n;
+          if (!isNaN(n)) { s += n; matched++; }
         }
       });
-      return s;
+      return name === "AVERAGEIF" ? (matched ? s / matched : 0) : s;
     }
+    case "SUMIFS":
+    case "COUNTIFS": {
+      // SUMIFS(sum_range, crit_range1, crit1, ...) · COUNTIFS(crit_range1, crit1, ...)
+      const pairs: { vals: string[]; crit: string }[] = [];
+      let sumVals: string[] = [];
+      if (name === "SUMIFS") {
+        const sr = args[0];
+        sumVals = sr ? (sr.kind === "range" ? sr.values : [String(sr.v)]) : [];
+        for (let i = 1; i + 1 < args.length; i += 2) {
+          const r = args[i];
+          const c = args[i + 1];
+          pairs.push({ vals: r ? (r.kind === "range" ? r.values : [String(r.v)]) : [], crit: c ? (c.kind === "value" ? String(c.v) : String(c.values[0] ?? "")) : "" });
+        }
+      } else {
+        for (let i = 0; i + 1 < args.length; i += 2) {
+          const r = args[i];
+          const c = args[i + 1];
+          pairs.push({ vals: r ? (r.kind === "range" ? r.values : [String(r.v)]) : [], crit: c ? (c.kind === "value" ? String(c.v) : String(c.values[0] ?? "")) : "" });
+        }
+      }
+      const makeTest = (crit: string) => (v: string): boolean => {
+        const m = /^(>=|<=|>|<|=|<>)(.*)$/.exec(crit);
+        if (m) {
+          const target = parseFloat(m[2].replace(/[$,\s]/g, ""));
+          const value = parseFloat(String(v).replace(/[$,\s]/g, ""));
+          if (!isNaN(target) && !isNaN(value)) {
+            switch (m[1]) {
+              case ">": return value > target;
+              case "<": return value < target;
+              case ">=": return value >= target;
+              case "<=": return value <= target;
+              case "=": return value === target;
+              case "<>": return value !== target;
+            }
+          }
+          return m[1] === "=" ? String(v) === m[2] : false;
+        }
+        return String(v).trim().toLowerCase() === crit.trim().toLowerCase();
+      };
+      const n = sumVals.length || pairs[0]?.vals.length || 0;
+      let out = 0;
+      for (let i = 0; i < n; i++) {
+        if (pairs.every((p) => { const v = p.vals[i] ?? ""; return v !== "" && makeTest(p.crit)(v); })) {
+          if (name === "COUNTIFS") out++;
+          else {
+            const x = parseFloat(String(sumVals[i] ?? "").replace(/[$,\s]/g, ""));
+            if (!isNaN(x)) out += x;
+          }
+        }
+      }
+      return out;
+    }
+    case "XLOOKUP": {
+      // XLOOKUP(lookup, lookup_range, return_range, [if_not_found])
+      const lookup = scalar(0);
+      const lr = args[1];
+      const rr = args[2];
+      if (!lr || lr.kind !== "range" || !rr || rr.kind !== "range") throw new FormulaError("#VALUE!");
+      const lk = typeof lookup === "number" ? lookup : String(lookup).trim().toLowerCase();
+      for (let i = 0; i < lr.values.length; i++) {
+        const key = lr.values[i];
+        const keyN = typeof lookup === "number" ? parseFloat(String(key).replace(/[$,\s]/g, "")) : NaN;
+        const match = typeof lookup === "number"
+          ? !isNaN(keyN) && keyN === lookup
+          : String(key).trim().toLowerCase() === lk;
+        if (match) {
+          const out = rr.values[i] ?? "";
+          const outN = parseFloat(String(out).replace(/[$,\s]/g, ""));
+          return isNaN(outN) || out === "" ? out : outN;
+        }
+      }
+      if (args.length > 3) return scalar(3);
+      throw new FormulaError("#N/A");
+    }
+    case "INDEX": {
+      const rng = args[0];
+      if (!rng || rng.kind !== "range") throw new FormulaError("#VALUE!");
+      const row = Math.round(num(scalar(1)));
+      const col = args.length > 2 ? Math.round(num(scalar(2))) : 1;
+      if (row < 1 || row > rng.h || col < 1 || col > rng.w) throw new FormulaError("#REF!");
+      const out = rng.values[(row - 1) * rng.w + (col - 1)] ?? "";
+      const outN = parseFloat(String(out).replace(/[$,\s]/g, ""));
+      return isNaN(outN) || out === "" ? out : outN;
+    }
+    case "MATCH": {
+      const lookup = scalar(0);
+      const rng = args[1];
+      if (!rng || rng.kind !== "range") throw new FormulaError("#VALUE!");
+      const type = args.length > 2 ? num(scalar(2)) : 1;
+      const vals = rng.values;
+      const lk = typeof lookup === "number" ? lookup : String(lookup).trim().toLowerCase();
+      if (type === 0) {
+        for (let i = 0; i < vals.length; i++) {
+          const key = vals[i];
+          const keyN = typeof lookup === "number" ? parseFloat(String(key).replace(/[$,\s]/g, "")) : NaN;
+          const match = typeof lookup === "number" ? !isNaN(keyN) && keyN === lookup : String(key).trim().toLowerCase() === lk;
+          if (match) return i + 1;
+        }
+        throw new FormulaError("#N/A");
+      }
+      if (type === 1) {
+        let best = -1;
+        for (let i = 0; i < vals.length; i++) {
+          const v = parseFloat(String(vals[i]).replace(/[$,\s]/g, ""));
+          if (!isNaN(v) && typeof lk === "number" && v <= lk) best = i; else break;
+        }
+        if (best < 0) throw new FormulaError("#N/A");
+        return best + 1;
+      }
+      let best = -1;
+      for (let i = 0; i < vals.length; i++) {
+        const v = parseFloat(String(vals[i]).replace(/[$,\s]/g, ""));
+        if (!isNaN(v) && typeof lk === "number" && v >= lk) best = i; else break;
+      }
+      if (best < 0) throw new FormulaError("#N/A");
+      return best + 1;
+    }
+    case "ROUNDUP": { const d = args.length > 1 ? num(scalar(1)) : 0; const p = Math.pow(10, d); return Math.ceil(Math.abs(num(scalar(0))) * p) / p * Math.sign(num(scalar(0)) || 1); }
+    case "ROUNDDOWN": { const d = args.length > 1 ? num(scalar(1)) : 0; const p = Math.pow(10, d); return (Math.floor(Math.abs(num(scalar(0))) * p) / p) * Math.sign(num(scalar(0)) || 1); }
     default: throw new FormulaError(`#${name}?`);
   }
 }
@@ -419,13 +622,13 @@ function usedRange(cells: Record<string, string>): { rows: number; cols: number 
 
 /* ================= component ================= */
 const EXCEL_MISSION = [
-  { id: "load", label: "Load a sample file", detail: "Use the **data picker** to load *Retail Sales 2025 (Clean)* — or import your own CSV. Columns become A, B, C…" },
-  { id: "formula", label: "Write your first formula", detail: "Click an empty cell, type ~ =SUM(K2:K100) ~ and press Enter. Every formula starts with **=**." },
-  { id: "stats", label: "Profile a column", detail: "Click a **column header** (like J) — the stats panel instantly shows sum, mean, median and spread." },
-  { id: "logic", label: "Use conditional logic", detail: "Try ~ =SUMIF(F:F,\"North\",K:K) ~, ~ =COUNTIF(J:J,\">500\") ~ or ~ =IF(J2>1000,\"Big\",\"Small\") ~." },
-  { id: "lookup", label: "Look up a value", detail: "VLOOKUP finds a match in a table: ~ =VLOOKUP(\"Office Chair\",G2:H21,2,FALSE) ~ returns its price." },
-  { id: "clean", label: "Clean the sheet", detail: "Sort A→Z, remove duplicate rows, fix text case with the Trim / Upper / Lower buttons." },
-  { id: "ship", label: "Save & export", detail: "Name the sheet and **Save** (it persists), then **Export CSV** to get a file for your portfolio." },
+  { id: "load", label: "Load a sample file", detail: "Use the **data picker** to load *Retail Sales 2025 (Clean)* — or the 8,000-row *Bank Transactions* for a big-file workout. Or import your own CSV from the Data tab." },
+  { id: "formula", label: "Write your first formula", detail: "Open the **Formulas** ribbon tab and click **SUM** — it drops ~ =SUM(K2:K50) ~ into the active cell. Every formula starts with **=**." },
+  { id: "stats", label: "Profile a column", detail: "Click a **column header** (like I) — the stats panel shows sum, mean, median and spread, and the **status bar** underneath tracks Count / Sum / Average live." },
+  { id: "logic", label: "Use conditional logic", detail: "From the Formulas tab try ~ =SUMIF(D:D,\"North\",I:I) ~, ~ =COUNTIF(I:I,\">500\") ~ or ~ =IF(I2>1000,\"Big\",\"Small\") ~." },
+  { id: "lookup", label: "Look up a value", detail: "VLOOKUP is the classic, XLOOKUP is the modern one: ~ =XLOOKUP(\"Office Chair\",F:F,I:I,\"nf\") ~ finds the product's revenue." },
+  { id: "clean", label: "Clean the sheet", detail: "From the **Home** tab: sort A→Z, remove duplicate rows, fix text case with Trim / Upper / Lower / Title." },
+  { id: "ship", label: "Save & export", detail: "Name the sheet and save it as a **sheet tab** (bottom of the grid), then **Export CSV** from the Data tab for your portfolio." },
 ];
 
 export function ExcelTool() {
@@ -436,8 +639,10 @@ export function ExcelTool() {
   const [sheetName, setSheetName] = React.useState("");
   const [selectedCol, setSelectedCol] = React.useState(0);
   const [loadedInfo, setLoadedInfo] = React.useState<string | null>(null);
+  const [ribbonTab, setRibbonTab] = React.useState<"home" | "formulas" | "data">("home");
   const gridRef = React.useRef<HTMLDivElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
+  const nameRef = React.useRef<HTMLInputElement>(null);
 
   const { rows: usedR, cols: usedC } = usedRange(cells);
   const viewRows = Math.max(usedR + 8, 25);
@@ -474,6 +679,9 @@ export function ExcelTool() {
     else if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       setCells((cc) => { const n = { ...cc }; delete n[active]; return n; });
+    } else if (e.key === "d" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      fillDown();
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
       startEdit(e.key);
       e.preventDefault();
@@ -623,6 +831,43 @@ export function ExcelTool() {
   const activeRaw = cells[active] ?? "";
   const formulaCount = Object.values(cells).filter((v) => v.startsWith("=")).length;
 
+  /* status bar: Excel-standard selection summary for the active column */
+  const statusBar = React.useMemo(() => {
+    let count = 0, numCount = 0, sum = 0;
+    for (let r = 0; r < usedR; r++) {
+      const raw = displayValue(refFor(selectedCol, r), cells);
+      if (raw === "") continue;
+      count++;
+      const v = parseFloat(raw.replace(/[$,\s]/g, ""));
+      if (!isNaN(v)) { numCount++; sum += v; }
+    }
+    return { count, numCount, sum, avg: numCount ? sum / numCount : 0 };
+  }, [cells, selectedCol, usedR]);
+
+  const insertFormula = (tpl: string) => {
+    setEditVal(tpl);
+  };
+
+  const FORMULA_BUTTONS: { label: string; tpl: string; hint: string }[] = [
+    { label: "SUM", tpl: "=SUM(K2:K50)", hint: "Add a range of numbers" },
+    { label: "AVERAGE", tpl: "=AVERAGE(K2:K50)", hint: "Arithmetic mean" },
+    { label: "COUNT", tpl: "=COUNT(K2:K50)", hint: "Count numeric cells" },
+    { label: "COUNTA", tpl: "=COUNTA(A2:A50)", hint: "Count non-empty cells" },
+    { label: "IF", tpl: '=IF(J2>1000,"Big","Small")', hint: "Conditional logic" },
+    { label: "IFERROR", tpl: '=IFERROR(J2/K2,"n/a")', hint: "Trap errors with a fallback" },
+    { label: "SUMIF", tpl: '=SUMIF(F:F,"North",K:K)', hint: "Conditional sum" },
+    { label: "SUMIFS", tpl: '=SUMIFS(K:K,F:F,"North",E:E,"Retail")', hint: "Sum with multiple criteria" },
+    { label: "COUNTIF", tpl: '=COUNTIF(J:J,">500")', hint: "Conditional count" },
+    { label: "COUNTIFS", tpl: '=COUNTIFS(F:F,"North",J:J,">500")', hint: "Count with multiple criteria" },
+    { label: "AVERAGEIF", tpl: '=AVERAGEIF(F:F,"West",K:K)', hint: "Conditional average" },
+    { label: "VLOOKUP", tpl: '=VLOOKUP("Office Chair",G2:H21,2,FALSE)', hint: "Classic table lookup" },
+    { label: "XLOOKUP", tpl: '=XLOOKUP("Office Chair",G2:G21,H2:H21,"not found")', hint: "Modern lookup — any direction" },
+    { label: "INDEX", tpl: "=INDEX(H2:H21,3)", hint: "Value at position in a range" },
+    { label: "MATCH", tpl: '=MATCH("Office Chair",G2:G21,0)', hint: "Position of a value (pairs with INDEX)" },
+    { label: "ROUND", tpl: "=ROUND(J2/12,2)", hint: "Round to N decimals" },
+    { label: "TEXT", tpl: '=TRIM(B2)&" "&C2', hint: "Combine + clean text" },
+  ];
+
   /* dynamic coach tips */
   const tips: string[] = React.useMemo(() => {
     const t: string[] = [];
@@ -678,54 +923,104 @@ export function ExcelTool() {
         </div>
       </div>
 
-      {/* toolbar */}
-      <div className={`${PANEL} flex flex-wrap items-center gap-1.5 px-2 py-1.5 text-xs`}>
-        <span className="px-1 text-muted-foreground">Sort col {colName(selectedCol)}:</span>
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, 1)}>A→Z</Button>
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, -1)}>Z→A</Button>
-        <span className="mx-1 h-4 w-px bg-border" />
-        <TooltipProvider delayDuration={200}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={fillDown}><ArrowDownToLine className="mr-1 h-3 w-3" />Fill down</Button>
-            </TooltipTrigger>
-            <TooltipContent>Copies the active cell down to the end of the data — great for repeating a formula</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={dedupeRows}><Eraser className="mr-1 h-3 w-3" />Remove duplicate rows</Button>
-        <span className="mx-1 h-4 w-px bg-border" />
-        <span className="px-1 text-muted-foreground">Text col {colName(selectedCol)}:</span>
-        {(["trim", "upper", "lower", "title"] as const).map((m) => (
-          <Button key={m} variant="ghost" size="sm" className="h-7 px-2 text-xs capitalize" onClick={() => transformCol(m)}><Wand2 className="mr-1 h-3 w-3" />{m}</Button>
-        ))}
-        <span className="mx-1 h-4 w-px bg-border" />
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-600 hover:bg-red-500/10 dark:text-red-300" onClick={() => { setCells({}); setLoadedInfo(null); }}><Trash2 className="mr-1 h-3 w-3" />Clear sheet</Button>
-        <span className="ml-auto flex items-center gap-1.5">
-          <Input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="Sheet name" className="h-7 w-28 border-border bg-background/60 text-xs" />
-          <Button variant="outline" size="sm" className="h-7 border-border px-2 text-xs" onClick={() => sheetName && saveSheet(sheetName, cells)}><Save className="h-3 w-3" /> Save</Button>
-          {Object.keys(sheets).length > 0 && (
-            <select
-              className="h-7 rounded-md border border-border bg-card px-1.5 text-xs text-foreground"
-              onChange={(e) => { const v = e.target.value; if (v && sheets[v]) { setCells(sheets[v].cells); setSheetName(v); } }}
-              value=""
+      {/* ribbon — Excel-standard tabbed toolbar */}
+      <div className={`${PANEL} overflow-hidden`}>
+        <div className="flex items-center gap-1 border-b border-border px-2 pt-1.5" role="tablist" aria-label="Excel ribbon tabs">
+          {([["home", "Home"], ["formulas", "Formulas"], ["data", "Data"]] as const).map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={ribbonTab === id}
+              onClick={() => setRibbonTab(id)}
+              className={`rounded-t-lg px-3.5 py-1.5 text-[12.5px] font-semibold transition-colors ${
+                ribbonTab === id
+                  ? "border border-b-0 border-border bg-muted/60 text-emerald-700 dark:text-emerald-300"
+                  : "text-muted-foreground hover:bg-muted/50"
+              }`}
             >
-              <option value="" disabled>Open saved…</option>
-              {Object.values(sheets).map((s) => (
-                <option key={s.name} value={s.name}>{s.name} · {new Date(s.savedAt).toLocaleDateString()}</option>
+              {label}
+            </button>
+          ))}
+          <span className="ml-auto pb-1 pr-1 text-[10.5px] text-muted-foreground">
+            Column {colName(selectedCol)} selected · {usedR > 1 ? `${usedR - 1} data rows` : "empty sheet"}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5 px-2.5 py-2 text-xs">
+          {ribbonTab === "home" && (
+            <>
+              <span className="px-1 text-muted-foreground">Sort col {colName(selectedCol)}:</span>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, 1)}>A→Z</Button>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, -1)}>Z→A</Button>
+              <span className="mx-1 h-4 w-px bg-border" />
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={fillDown}><ArrowDownToLine className="mr-1 h-3 w-3" />Fill down</Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copies the active cell down to the end of the data (also Ctrl+D) — great for repeating a formula</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={dedupeRows}><Eraser className="mr-1 h-3 w-3" />Remove duplicate rows</Button>
+              <span className="mx-1 h-4 w-px bg-border" />
+              <span className="px-1 text-muted-foreground">Text col {colName(selectedCol)}:</span>
+              {(["trim", "upper", "lower", "title"] as const).map((m) => (
+                <Button key={m} variant="ghost" size="sm" className="h-7 px-2 text-xs capitalize" onClick={() => transformCol(m)}><Wand2 className="mr-1 h-3 w-3" />{m}</Button>
               ))}
-            </select>
+              <span className="mx-1 h-4 w-px bg-border" />
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-600 hover:bg-red-500/10 dark:text-red-300" onClick={() => { setCells({}); setLoadedInfo(null); }}><Trash2 className="mr-1 h-3 w-3" />Clear sheet</Button>
+            </>
           )}
-        </span>
+
+          {ribbonTab === "formulas" && (
+            <>
+              <span className="px-1 text-muted-foreground">Click one, then edit the cell — it lands in {active}:</span>
+              {FORMULA_BUTTONS.map((f) => (
+                <TooltipProvider key={f.label} delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="ghost" size="sm" className="h-7 px-2 font-mono text-[11px] text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300" onClick={() => insertFormula(f.tpl)}>
+                        {f.label}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">{f.hint}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ))}
+            </>
+          )}
+
+          {ribbonTab === "data" && (
+            <>
+              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} />
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => fileRef.current?.click()}><Upload className="mr-1 h-3 w-3" />Import CSV</Button>
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={exportCSV}><Download className="mr-1 h-3 w-3" />Export CSV</Button>
+              <span className="mx-1 h-4 w-px bg-border" />
+              <span className="px-1 text-muted-foreground">Download practice files:</span>
+              {["messy_sales", "bank_transactions", "deliveries", "server_logs", "finance_gl", "inventory"].map((id) => (
+                <button key={id} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => downloadDatasetCSV(id)}>
+                  {getDatasetById(id)?.name.split(" (")[0] ?? id}
+                </button>
+              ))}
+              <span className="mx-1 h-4 w-px bg-border" />
+              <span className="flex items-center gap-1.5">
+                <Input ref={nameRef} value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="Sheet name" className="h-7 w-28 border-border bg-background/60 text-xs" />
+                <Button variant="outline" size="sm" className="h-7 border-border px-2 text-xs" onClick={() => sheetName && saveSheet(sheetName, cells)}><Save className="h-3 w-3" /> Save</Button>
+              </span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* grid + stats */}
       <div className="flex flex-col gap-4 lg:flex-row">
-        <div
-          ref={gridRef}
-          tabIndex={0}
-          onKeyDown={onKey}
-          className={`${PANEL} flex-1 overflow-auto outline-none scrollbar-thin`} style={{ maxHeight: "62vh" }}
-        >
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            ref={gridRef}
+            tabIndex={0}
+            onKeyDown={onKey}
+            className={`${PANEL} overflow-auto outline-none scrollbar-thin`} style={{ maxHeight: "58vh" }}
+          >
           <table className="border-collapse text-[13px]" style={{ minWidth: viewCols * 96 }}>
             <thead>
               <tr className="sticky top-0 z-10 bg-card">
@@ -785,6 +1080,53 @@ export function ExcelTool() {
               ))}
             </tbody>
           </table>
+          </div>
+
+          {/* status bar — Excel-standard selection summary */}
+          <div className={`${PANEL} mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 text-[11px] text-muted-foreground`}>
+            <span className={editVal !== null ? "font-semibold text-emerald-700 dark:text-emerald-300" : ""}>{editVal !== null ? "Editing" : "Ready"}</span>
+            <span className="h-3 w-px bg-border" />
+            <span>Cell <b className="font-mono text-foreground">{active}</b></span>
+            <span className="h-3 w-px bg-border" />
+            <span>Count: <b className="font-mono text-foreground">{statusBar.count.toLocaleString()}</b></span>
+            <span>Numeric: <b className="font-mono text-foreground">{statusBar.numCount.toLocaleString()}</b></span>
+            <span>Sum: <b className="font-mono text-foreground">{fmtNum(statusBar.sum)}</b></span>
+            <span>Average: <b className="font-mono text-foreground">{fmtNum(statusBar.avg)}</b></span>
+            <span className="ml-auto hidden sm:inline">of column {colName(selectedCol)} · arrows move · Enter edits · Ctrl+D fills down</span>
+          </div>
+
+          {/* sheet tabs — Excel-standard bottom tabs */}
+          <div className="mt-2 flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
+            <button
+              onClick={() => gridRef.current?.focus()}
+              className={`flex shrink-0 items-center gap-1 rounded-t-lg border border-b-0 border-border px-3.5 py-1.5 text-xs font-semibold ${sheetName ? "bg-muted/50 text-muted-foreground" : "bg-card text-foreground"}`}
+              title={sheetName ? "Unsaved working sheet" : "Active sheet"}
+            >
+              <FileSpreadsheet className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+              {sheetName || "Sheet1"}
+            </button>
+            {Object.values(sheets).map((s) => (
+              <div key={s.name} className="group flex shrink-0 items-center gap-1 rounded-t-lg border border-b-0 border-border bg-card px-3 py-1.5 text-xs">
+                <button className="font-medium text-foreground/85 hover:text-foreground" onClick={() => { setCells(s.cells); setSheetName(s.name); }} title="Open this saved sheet">
+                  {s.name}
+                </button>
+                <button className="text-muted-foreground/50 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100" aria-label={`Delete ${s.name}`} onClick={() => deleteSheet(s.name)}>
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => {
+                const nm = sheetName || `Sheet${Object.keys(sheets).length + 1}`;
+                saveSheet(nm, cells);
+                setSheetName(nm);
+              }}
+              className="flex shrink-0 items-center gap-1 rounded-t-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+              title="Save the current sheet as a tab (type a name in the Data tab first)"
+            >
+              <Plus className="h-3.5 w-3.5" /> Save sheet
+            </button>
+          </div>
         </div>
 
         {/* stats + help */}
@@ -813,40 +1155,15 @@ export function ExcelTool() {
           <div className={PANEL}>
             <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Formula cheat-sheet</span></div>
             <div className="space-y-1 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
-              <p><span className="text-emerald-700 dark:text-emerald-300">=SUM(B2:B100)</span> · total</p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=AVERAGE / MEDIAN / STDEV / VAR</span></p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=SUMIF(E:E,"North",J:J)</span></p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=COUNTIF(E:E,"&gt;500")</span> · <span className="text-emerald-700 dark:text-emerald-300">=COUNTBLANK(A:A)</span></p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=VLOOKUP("Desk",G:J,4)</span></p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=IF(J2&gt;1000,"Big","Small")</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=SUM(B2:B100)</span> · <span className="text-emerald-700 dark:text-emerald-300">=AVERAGE / MEDIAN / STDEV</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=SUMIF(E:E,"North",J:J)</span> · <span className="text-emerald-700 dark:text-emerald-300">=SUMIFS(J:J,E:E,"N",F:F,"W")</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=COUNTIF(E:E,"&gt;500")</span> · <span className="text-emerald-700 dark:text-emerald-300">=COUNTIFS(E:E,"N",J:J,"&gt;5")</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=VLOOKUP("Desk",G:J,4)</span> · <span className="text-emerald-700 dark:text-emerald-300">=XLOOKUP("Desk",G:G,J:J)</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=INDEX(J2:J21,3)</span> · <span className="text-emerald-700 dark:text-emerald-300">=MATCH("Desk",G2:G21,0)</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=IF(J2&gt;1000,"Big","Small")</span> · <span className="text-emerald-700 dark:text-emerald-300">=IFERROR(J2/K2,"n/a")</span></p>
               <p><span className="text-emerald-700 dark:text-emerald-300">=CONCAT(B2," ",C2)</span> · <span className="text-emerald-700 dark:text-emerald-300">=TEXTJOIN(", ",1,A2:A5)</span></p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=ROUND(J2/12, 2)</span> · <span className="text-emerald-700 dark:text-emerald-300">=INT / MOD / ABS / SQRT</span></p>
-              <p><span className="text-emerald-700 dark:text-emerald-300">=LEFT / RIGHT / MID / LEN / TRIM</span></p>
-            </div>
-          </div>
-          {Object.keys(sheets).length > 0 && (
-            <div className={PANEL}>
-              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Saved sheets</span></div>
-              <div className="space-y-1 p-2">
-                {Object.values(sheets).map((s) => (
-                  <div key={s.name} className="flex items-center justify-between rounded-md px-2 py-1 text-xs text-foreground/85 hover:bg-muted">
-                    <button className="flex-1 text-left" onClick={() => { setCells(s.cells); setSheetName(s.name); }}>{s.name}</button>
-                    <button className="text-muted-foreground hover:text-red-500" onClick={() => deleteSheet(s.name)}><Trash2 className="h-3 w-3" /></button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className={PANEL}>
-            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sample files</span></div>
-            <div className="max-h-52 space-y-0.5 overflow-y-auto p-2 scrollbar-thin">
-              <p className="px-2 pb-1 text-[11px] text-muted-foreground">Download any sample file as CSV to practice importing:</p>
-              {["messy_sales", "ecom_orders", "server_logs", "finance_gl"].map((id) => (
-                <button key={id} className="flex w-full items-center justify-between rounded-md px-2 py-1 text-xs text-foreground/85 hover:bg-muted" onClick={() => downloadDatasetCSV(id)}>
-                  <span className="truncate">{id}</span>
-                  <Database className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                </button>
-              ))}
+              <p><span className="text-emerald-700 dark:text-emerald-300">=ROUND / ROUNDUP / ROUNDDOWN / INT / MOD</span></p>
+              <p><span className="text-emerald-700 dark:text-emerald-300">=LEFT / RIGHT / MID / LEN / TRIM / PROPER</span></p>
             </div>
           </div>
         </div>

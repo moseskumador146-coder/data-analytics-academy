@@ -7,13 +7,13 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ToolHeader, PANEL, PANEL_HEAD, downloadDatasetCSV } from "./shared";
+import { ToolHeader, PANEL, PANEL_HEAD, DatasetPicker, downloadDatasetCSV } from "./shared";
 import { Coach } from "./Coach";
-import { getSqlTables, getDatasetById, rowsToCSV, downloadFile } from "@/lib/academy/datasets";
+import { getSqlTables, getDatasetById, rowsToCSV, downloadFile, type Dataset, type SqlTable, type Row } from "@/lib/academy/datasets";
 import { runSql } from "@/lib/academy/sql-engine";
 import { useAcademy } from "@/lib/academy/store";
 import {
-  BookOpenCheck, CheckCircle2, ChevronRight, Clock, Database, Download, Eye, Play, Sparkles, Table2, Terminal, XCircle,
+  BookOpenCheck, CheckCircle2, ChevronRight, Clock, Database, Download, Eye, Play, Plus, Sparkles, Table2, Terminal, Trash2, XCircle,
 } from "lucide-react";
 
 interface Exercise {
@@ -112,6 +112,7 @@ const SQL_MISSION = [
   { id: "filter", label: "Filter with WHERE", detail: "Add a condition: ~ WHERE status = 'completed' ~. Combine with AND / OR, sort with ORDER BY." },
   { id: "group", label: "Aggregate with GROUP BY", detail: "Collapse rows into groups: ~ SELECT status, COUNT(*) FROM orders GROUP BY status; ~" },
   { id: "join", label: "JOIN two tables", detail: "Relationships live in keys: ~ JOIN customers c ON o.customer_id = c.id ~. Then LEFT JOIN to find customers with no orders." },
+  { id: "import", label: "Query a raw file", detail: "In the schema browser, use **Import a data file as a table** — load *Supplier Deliveries*, then ~ GROUP BY supplier ~. See the case-variant duplicates (AcmeParts vs acmeparts)? That's why cleaning matters." },
   { id: "exercise", label: "Solve 3 exercises", detail: "Open the practice set and solve **at least exercises 1, 4 and 7** — press Check answer for instant feedback." },
   { id: "cte", label: "Chain steps with a CTE", detail: "WITH breaks a hard query into named steps. Exercise 10 walks you through a two-CTE capstone." },
   { id: "export", label: "Export your result", detail: "Run any query and click **Export CSV** — that's how query results become report inputs." },
@@ -119,9 +120,46 @@ const SQL_MISSION = [
 
 type RunResult = { columns: string[]; rows: (string | number | null)[][]; ms: number };
 
+/** Convert any sample dataset into a queryable SQL table (types inferred, blanks → NULL) */
+function datasetToSqlTable(ds: Dataset): SqlTable {
+  const columns = ds.columns.map((c) => {
+    let type = "TEXT";
+    if (c.type === "date") type = "DATE";
+    else if (c.type === "number" || c.type === "currency") {
+      const allNum = ds.rows.every((r) => {
+        const v = r[c.key];
+        if (v === null || v === "" || v === undefined) return true;
+        return typeof v === "number" || !isNaN(parseFloat(String(v).replace(/[$,\s]/g, "")));
+      });
+      type = allNum ? "REAL" : "TEXT";
+    }
+    return { name: c.key, type };
+  });
+  const rows: Row[] = ds.rows.slice(0, 4000).map((r) => {
+    const out: Row = {};
+    for (const c of ds.columns) {
+      const v = r[c.key];
+      if (v === "" || v === undefined || v === null) out[c.key] = null;
+      else if (typeof v === "string") {
+        const n = parseFloat(v.replace(/[$,\s]/g, ""));
+        out[c.key] = !isNaN(n) && /^[\d.,$\s+-]+$/.test(v) ? n : v;
+      } else out[c.key] = v;
+    }
+    return out;
+  });
+  return {
+    name: ds.id,
+    description: `${ds.name} — imported sample file (first ${rows.length.toLocaleString()} rows; blanks became NULL, $-text became numbers).`,
+    columns,
+    rows,
+  };
+}
+
 export function SqlTool() {
-  const tables = getSqlTables();
+  const baseTables = getSqlTables();
   const { addXp } = useAcademy();
+  const [extraTables, setExtraTables] = React.useState<Record<string, SqlTable>>({});
+  const tables = React.useMemo(() => ({ ...baseTables, ...extraTables }), [extraTables]);
   const [sql, setSql] = React.useState("SELECT name, city, segment\nFROM customers\nLIMIT 10;");
   const [result, setResult] = React.useState<RunResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -189,6 +227,17 @@ export function SqlTool() {
 
   const passedCount = Object.values(checked).filter((v) => v === "pass").length;
 
+  const importTable = (id: string) => {
+    const ds = getDatasetById(id);
+    if (!ds) return;
+    const t = datasetToSqlTable(ds);
+    setExtraTables((prev) => ({ ...prev, [t.name]: t }));
+    setSql(`-- New table: ${t.name} (${t.rows.length.toLocaleString()} rows)
+SELECT * FROM ${t.name} LIMIT 10;`);
+    run(`SELECT * FROM ${t.name} LIMIT 10;`);
+    setOpenTable(t.name);
+  };
+
   /* dynamic tips */
   const tips: string[] = React.useMemo(() => {
     const t: string[] = [];
@@ -225,7 +274,7 @@ export function SqlTool() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_1fr]">
         {/* schema browser */}
         <div className={`${PANEL} max-h-[70vh] overflow-auto scrollbar-thin`}>
-          <div className={PANEL_HEAD}><span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Database className="h-3.5 w-3.5 text-sky-500" /> Schema · store_db</span></div>
+          <div className={PANEL_HEAD}><span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Database className="h-3.5 w-3.5 text-sky-500" /> Schema · store_db{Object.keys(extraTables).length > 0 ? ` + ${Object.keys(extraTables).length} imported` : ""}</span></div>
           <div className="p-2">
             {Object.values(tables).map((t) => (
               <div key={t.name} className="mb-1 overflow-hidden rounded-lg border border-border/60">
@@ -233,8 +282,20 @@ export function SqlTool() {
                   className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition-colors ${openTable === t.name ? "bg-sky-500/10 text-sky-700 dark:text-sky-300" : "text-foreground/85 hover:bg-muted"}`}
                   onClick={() => setOpenTable(openTable === t.name ? null : t.name)}
                 >
-                  <span className="flex items-center gap-2 font-mono"><Table2 className="h-3.5 w-3.5" />{t.name}</span>
-                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">{t.rows.length} rows<ChevronRight className={`h-3 w-3 transition-transform ${openTable === t.name ? "rotate-90" : ""}`} /></span>
+                  <span className="flex min-w-0 items-center gap-2 font-mono"><Table2 className={`h-3.5 w-3.5 shrink-0 ${extraTables[t.name] ? "text-violet-500" : "text-sky-500"}`} />{t.name}</span>
+                  <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+                    {t.rows.length.toLocaleString()} rows
+                    {extraTables[t.name] && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="rounded p-0.5 opacity-60 hover:bg-muted hover:text-red-500 hover:opacity-100"
+                        aria-label={`Remove table ${t.name}`}
+                        onClick={(e) => { e.stopPropagation(); setExtraTables((prev) => { const n = { ...prev }; delete n[t.name]; return n; }); }}
+                      ><Trash2 className="h-3 w-3" /></span>
+                    )}
+                    <ChevronRight className={`h-3 w-3 transition-transform ${openTable === t.name ? "rotate-90" : ""}`} />
+                  </span>
                 </button>
                 {openTable === t.name && (
                   <div className="border-t border-border/60 bg-muted/30 px-3 py-2">
@@ -257,6 +318,13 @@ export function SqlTool() {
                 )}
               </div>
             ))}
+            <div className="mt-2 rounded-lg border border-dashed border-border p-2.5">
+              <p className="mb-1.5 flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide text-muted-foreground"><Plus className="h-3 w-3 text-violet-500" /> Import a data file as a table</p>
+              <DatasetPicker onPick={importTable} className="h-7 w-full text-[11px]" />
+              <p className="mt-1.5 text-[10.5px] leading-snug text-muted-foreground">
+                Any sample file becomes queryable SQL — messy ones included. Blanks turn into NULL, $-text into numbers. Try <code className="rounded bg-muted px-1 font-mono">GROUP BY</code> on a messy column to see why cleaning matters.
+              </p>
+            </div>
             <p className="px-2 pt-2 text-[11px] leading-relaxed text-muted-foreground/80">
               Relationships: orders.customer_id → customers.id · order_items.order_id → orders.id · order_items.product_id → products.id · employees.manager_id → employees.id
             </p>

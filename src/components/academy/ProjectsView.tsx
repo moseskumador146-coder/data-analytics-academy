@@ -58,7 +58,7 @@ export function ProjectsView() {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" className="border-white/15" onClick={() => setOpenId(null)}><ArrowLeft className="h-4 w-4" /> All projects</Button>
+          <Button variant="outline" size="sm" className="border-border" onClick={() => setOpenId(null)}><ArrowLeft className="h-4 w-4" /> All projects</Button>
         </div>
 
         <div className={`${PANEL} p-5 sm:p-6`}>
@@ -70,35 +70,35 @@ export function ProjectsView() {
                 <Badge variant="outline" className={levelBadgeCls(project.level)}>{project.level}</Badge>
                 {isDone && <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-300"><CheckCircle2 className="mr-1 h-3 w-3" /> Completed</Badge>}
               </div>
-              <p className="mt-1 flex items-center gap-1.5 text-[13px] text-zinc-400"><Briefcase className="h-3.5 w-3.5" />{project.company} <span className="mx-1 text-zinc-600">·</span> <Timer className="h-3.5 w-3.5" />{project.hours}</p>
+              <p className="mt-1 flex items-center gap-1.5 text-[13px] text-muted-foreground"><Briefcase className="h-3.5 w-3.5" />{project.company} <span className="mx-1 text-muted-foreground/60">·</span> <Timer className="h-3.5 w-3.5" />{project.hours}</p>
             </div>
             <div className="flex items-center gap-3">
               <div className="text-right">
-                <p className="text-[11px] uppercase tracking-wide text-zinc-500">Steps</p>
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground/80">Steps</p>
                 <p className="text-sm font-bold text-emerald-300">{prog.done}/{prog.total}</p>
               </div>
               <div className="w-28"><Progress value={prog.pct} className="h-2" /></div>
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-4 sm:grid-cols-2">
+          <div className="mt-4 grid gap-3 rounded-xl border border-border/60 bg-muted/30 p-4 sm:grid-cols-2">
             <div>
-              <p className="text-xs font-bold uppercase tracking-wide text-zinc-500">The scenario</p>
-              <p className="mt-1.5 text-[13.5px] leading-relaxed text-zinc-300">{project.scenario}</p>
+              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground/80">The scenario</p>
+              <p className="mt-1.5 text-[13.5px] leading-relaxed text-foreground/80">{project.scenario}</p>
             </div>
             <div>
               <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-emerald-400"><Target className="h-3.5 w-3.5" /> Your task</p>
-              <p className="mt-1.5 text-[13.5px] leading-relaxed text-zinc-300">{project.problem}</p>
+              <p className="mt-1.5 text-[13.5px] leading-relaxed text-foreground/80">{project.problem}</p>
             </div>
           </div>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
-            {project.skills.map((s) => <Badge key={s} variant="outline" className="border-white/10 text-[10px] text-zinc-400">{s}</Badge>)}
+            {project.skills.map((s) => <Badge key={s} variant="outline" className="border-border text-[10px] text-muted-foreground">{s}</Badge>)}
           </div>
         </div>
 
         <Tabs defaultValue="steps">
-          <TabsList className="border border-white/10 bg-zinc-900">
+          <TabsList className="border border-border bg-card">
             <TabsTrigger value="steps" className="text-xs"><ListChecks className="mr-1 h-3.5 w-3.5" /> Steps</TabsTrigger>
             <TabsTrigger value="data" className="text-xs"><Boxes className="mr-1 h-3.5 w-3.5" /> Dataset</TabsTrigger>
             <TabsTrigger value="deliver" className="text-xs"><Package className="mr-1 h-3.5 w-3.5" /> Deliverables</TabsTrigger>
@@ -112,15 +112,15 @@ export function ProjectsView() {
               return (
                 <div key={i} className={`${PANEL} p-4`}>
                   <div className="flex items-start gap-3">
-                    <button onClick={() => toggleStep(project.id, i)} className={`mt-0.5 shrink-0 transition-colors ${done ? "text-emerald-400" : "text-zinc-600 hover:text-emerald-300"}`}>
+                    <button onClick={() => toggleStep(project.id, i)} className={`mt-0.5 shrink-0 transition-colors ${done ? "text-emerald-400" : "text-muted-foreground/60 hover:text-emerald-300"}`}>
                       {done ? <CheckCircle2 className="h-5 w-5" /> : <Circle className="h-5 w-5" />}
                     </button>
                     <div className="min-w-0 flex-1">
-                      <p className={`text-[14.5px] font-semibold ${done ? "text-zinc-500 line-through" : "text-zinc-100"}`}>
+                      <p className={`text-[14.5px] font-semibold ${done ? "text-muted-foreground/80 line-through" : "text-foreground"}`}>
                         <span className="mr-2 font-mono text-[11px] text-emerald-400/80">STEP {i + 1}</span>
                         {step.title}
                       </p>
-                      <p className="mt-1 text-[13.5px] leading-relaxed text-zinc-400">{step.detail}</p>
+                      <p className="mt-1 text-[13.5px] leading-relaxed text-muted-foreground">{step.detail}</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         {step.tool && <Badge variant="outline" className="border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">🛠 {step.tool}</Badge>}
                         {step.hint && (
@@ -140,7 +140,7 @@ export function ProjectsView() {
             <div className={`${PANEL} flex flex-wrap items-center justify-between gap-3 p-4`}>
               <div>
                 <p className="flex items-center gap-2 text-sm font-semibold text-white"><FolderOutput className="h-4 w-4 text-emerald-400" /> Generate portfolio folder</p>
-                <p className="mt-0.5 text-[12px] text-zinc-500">
+                <p className="mt-0.5 text-[12px] text-muted-foreground/80">
                   Creates the complete project folder (README, data, scripts, reports) in your Workspace — ready for GitHub. {prog.done < prog.total && "You can generate now and refine later."}
                 </p>
               </div>
@@ -155,42 +155,42 @@ export function ProjectsView() {
               <div className={PANEL}>
                 <div className={PANEL_HEAD}>
                   <p className="text-sm font-semibold text-white">{ds.name}</p>
-                  <Badge variant="outline" className="border-white/10 text-[10px] text-zinc-400">{ds.rows.length} rows</Badge>
+                  <Badge variant="outline" className="border-border text-[10px] text-muted-foreground">{ds.rows.length} rows</Badge>
                 </div>
                 <div className="p-4">
-                  <p className="text-[13px] text-zinc-400">{ds.description}</p>
-                  <div className="mt-3 max-h-72 overflow-auto rounded-lg border border-white/10 scrollbar-thin">
+                  <p className="text-[13px] text-muted-foreground">{ds.description}</p>
+                  <div className="mt-3 max-h-72 overflow-auto rounded-lg border border-border scrollbar-thin">
                     <table className="w-full text-left text-[12px]">
-                      <thead className="sticky top-0 bg-zinc-900">
-                        <tr>{ds.columns.map((c) => <th key={c.key} className="whitespace-nowrap border-b border-white/10 px-3 py-2 font-mono text-[11px] text-emerald-300">{c.name}</th>)}</tr>
+                      <thead className="sticky top-0 bg-card">
+                        <tr>{ds.columns.map((c) => <th key={c.key} className="whitespace-nowrap border-b border-border px-3 py-2 font-mono text-[11px] text-emerald-300">{c.name}</th>)}</tr>
                       </thead>
                       <tbody>
                         {ds.rows.slice(0, 30).map((r, i) => (
-                          <tr key={i} className="border-b border-white/5">
-                            {ds.columns.map((c) => <td key={c.key} className="max-w-[160px] truncate whitespace-nowrap px-3 py-1.5 text-zinc-400">{String(r[c.key] ?? "")}</td>)}
+                          <tr key={i} className="border-b border-border/60">
+                            {ds.columns.map((c) => <td key={c.key} className="max-w-[160px] truncate whitespace-nowrap px-3 py-1.5 text-muted-foreground">{String(r[c.key] ?? "")}</td>)}
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                  <p className="mt-2 text-[11px] text-zinc-600">First 30 rows — open the suggested tool to work with the full dataset.</p>
+                  <p className="mt-2 text-[11px] text-muted-foreground/60">First 30 rows — open the suggested tool to work with the full dataset.</p>
                 </div>
               </div>
             ) : (
               <div className={`${PANEL} p-5`}>
                 <p className="text-sm font-semibold text-white">🗄 SQL store database</p>
-                <p className="mt-1 text-[13px] text-zinc-400">This project uses the SQL Playground's store database: customers, orders, order_items, products, employees. Open the SQL Playground and browse the schema to start.</p>
+                <p className="mt-1 text-[13px] text-muted-foreground">This project uses the SQL Playground's store database: customers, orders, order_items, products, employees. Open the SQL Playground and browse the schema to start.</p>
               </div>
             )}
           </TabsContent>
 
           <TabsContent value="deliver" className="mt-3">
             <div className={`${PANEL} p-4`}>
-              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">Your folder will contain</p>
+              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground/80">Your folder will contain</p>
               <div className="space-y-1.5">
                 {project.deliverables.map((d, i) => (
-                  <div key={i} className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 font-mono text-[12.5px] text-emerald-200/90">
-                    <ChevronDown className="h-3 w-3 text-zinc-600" />{d}
+                  <div key={i} className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 font-mono text-[12.5px] text-emerald-200/90">
+                    <ChevronDown className="h-3 w-3 text-muted-foreground/60" />{d}
                   </div>
                 ))}
               </div>
@@ -199,10 +199,10 @@ export function ProjectsView() {
 
           <TabsContent value="rubric" className="mt-3">
             <div className={`${PANEL} p-4`}>
-              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-500">Definition of done — grade yourself honestly</p>
+              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-muted-foreground/80">Definition of done — grade yourself honestly</p>
               <div className="space-y-1.5">
                 {project.rubric.map((r, i) => (
-                  <div key={i} className="flex gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-[13.5px] text-zinc-300">
+                  <div key={i} className="flex gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[13.5px] text-foreground/80">
                     <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400/70" />{r}
                   </div>
                 ))}
@@ -222,7 +222,7 @@ export function ProjectsView() {
         title="Real-World Projects"
         subtitle="7 company scenarios, step-by-step. Finish → generate the folder → push to GitHub. This IS your portfolio."
         actions={
-          <div className="flex items-center gap-2 text-xs text-zinc-400">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CheckCircle2 className="h-4 w-4 text-emerald-400" />
             {PROJECTS.filter((p) => completedProjects[p.id]).length}/{PROJECTS.length} completed
           </div>
@@ -242,16 +242,16 @@ export function ProjectsView() {
                 </div>
               </div>
               <h3 className="mt-3 text-[15px] font-bold text-white group-hover:text-emerald-200">{p.title}</h3>
-              <p className="mt-0.5 flex items-center gap-1 text-[11.5px] text-zinc-500"><Briefcase className="h-3 w-3" />{p.company.split("(")[0]}</p>
-              <p className="mt-2 line-clamp-3 text-[12.5px] leading-relaxed text-zinc-400">{p.problem}</p>
-              <div className="mt-3 flex items-center gap-3 text-[11px] text-zinc-500">
+              <p className="mt-0.5 flex items-center gap-1 text-[11.5px] text-muted-foreground/80"><Briefcase className="h-3 w-3" />{p.company.split("(")[0]}</p>
+              <p className="mt-2 line-clamp-3 text-[12.5px] leading-relaxed text-muted-foreground">{p.problem}</p>
+              <div className="mt-3 flex items-center gap-3 text-[11px] text-muted-foreground/80">
                 <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{p.hours}</span>
                 <span>{p.steps.length} steps</span>
                 <span>{p.skills.slice(0, 2).join(" · ")}…</span>
               </div>
               <div className="mt-3 flex items-center gap-2">
                 <Progress value={prog.pct} className="h-1.5 flex-1" />
-                <span className="text-[10px] text-zinc-500">{prog.done}/{prog.total}</span>
+                <span className="text-[10px] text-muted-foreground/80">{prog.done}/{prog.total}</span>
               </div>
             </button>
           );

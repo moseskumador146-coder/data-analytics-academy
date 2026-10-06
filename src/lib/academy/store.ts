@@ -100,7 +100,7 @@ export const useAcademy = create<AcademyState>()(
   persist(
     (set, get) => ({
       view: "home",
-      theme: "dark",
+      theme: "light",
       completedLessons: {},
       projectSteps: {},
       completedProjects: {},

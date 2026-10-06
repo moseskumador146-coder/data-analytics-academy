@@ -639,6 +639,110 @@ function buildInventory(): Row[] {
   return rows;
 }
 
+/* ---------------- bank transactions (HUGE MESSY) ---------------- */
+function buildBankTransactions(): Row[] {
+  const rng = mulberry32(909090);
+  const rows: Row[] = [];
+  const merchants: [string, string][] = [
+    ["Staples", "Office Supplies"], ["Amazon", "Online"], ["Shell", "Fuel"], ["Whole Foods", "Groceries"],
+    ["Delta Air", "Travel"], ["Marriott", "Hotels"], ["WeWork", "Facilities"], ["AWS", "Software"],
+    ["Microsoft 365", "Software"], ["Uber", "Transport"], ["LinkedIn Ads", "Marketing"], ["Google Ads", "Marketing"],
+    ["Chipotle", "Meals"], ["Office Depot", "Office Supplies"], ["Starbucks", "Meals"], ["FedEx", "Shipping"],
+  ];
+  const branches = ["NYC-Main", "CHI-West", "AUS-South", "SEA-North", "DEN-Tech", "MIA-Central"];
+  const types = ["purchase", "refund", "transfer", "fee", "payroll"];
+  const start = new Date("2025-01-01T00:00:00Z");
+  let id = 300000;
+  for (let i = 0; i < 7600; i++) {
+    const [merchant, cat] = pick(rng, merchants);
+    let date = new Date(start.getTime() + Math.floor(rng() * 300) * 86400000).toISOString().slice(0, 10);
+    if (rng() < 0.14) date = date.replaceAll("-", "/");                       // bad separator
+    if (rng() < 0.05) date = `${parseInt(date.slice(5, 7))}/${parseInt(date.slice(8, 10))}/${date.slice(0, 4)}`; // US style
+    let amount: Cell = +(rng() * 4200 + 1.5).toFixed(2);
+    if (rng() < 0.16) amount = `$${(amount as number).toLocaleString("en-US", { minimumFractionDigits: 2 })}`; // currency text
+    if (rng() < 0.09) amount = `${(amount as number).toLocaleString("en-US")}`;                                // thousands commas
+    if (rng() < 0.11) amount = -(amount as number);                           // refunds / credits
+    if (rng() < 0.035) amount = "";                                           // missing
+    let mOut = merchant;
+    if (rng() < 0.2) mOut = pick(rng, [merchant.toUpperCase(), merchant.toLowerCase(), ` ${merchant} `, merchant + "  Inc"]);
+    rows.push({
+      txn_id: `TXN-${id++}`,
+      posted_date: date,
+      account_id: `ACCT-${int(rng, 1000, 1999)}`,
+      merchant: mOut,
+      category: cat,
+      txn_type: rng() < 0.12 ? pick(rng, ["PURCHASE", "Purchase ", "purchase"]) : pick(rng, types),
+      amount,
+      currency: pick(rng, ["USD", "USD", "USD", "usd", "EUR"]),
+      branch: rng() < 0.08 ? "" : pick(rng, branches),
+      status: pick(rng, ["cleared", "cleared", "cleared", "pending", "failed"]),
+      balance_after: Math.round(5000 + rng() * 90000),
+    });
+    if (rng() < 0.08) rows.push({ ...rows[rows.length - 1], txn_id: `TXN-${id++}` }); // duplicate submissions
+  }
+  return rows.sort((a, b) => String(a.posted_date).localeCompare(String(b.posted_date)));
+}
+
+/* ---------------- supplier deliveries (LARGE MESSY) ---------------- */
+function buildDeliveries(): Row[] {
+  const rng = mulberry32(552211);
+  const rows: Row[] = [];
+  const suppliers = ["AcmeParts", "Brightline", "CoreSystems", "DeltaFreight", "Everlog", "FastTrack"];
+  const regions = ["North", "South", "East", "West", "Central"];
+  const skus = ["P-100", "P-205", "P-310", "P-415", "P-520", "P-630", "P-740"];
+  const start = new Date("2025-04-01T00:00:00Z");
+  let id = 70000;
+  for (let i = 0; i < 2400; i++) {
+    const promised = new Date(start.getTime() + Math.floor(rng() * 240) * 86400000);
+    const delay = Math.round(rng() * rng() * 18) * (rng() < 0.3 ? 0 : 1) - (rng() < 0.25 ? int(rng, 1, 4) : 0);
+    const delivered = new Date(promised.getTime() + delay * 86400000);
+    rows.push({
+      shipment_id: `SHP-${id++}`,
+      supplier: rng() < 0.18 ? pick(rng, ["acmeparts", " BrightLine ", "coresystems", "DELTAFREIGHT", "everlog "]) : pick(rng, suppliers),
+      region: rng() < 0.1 ? "" : pick(rng, regions),
+      sku: pick(rng, skus),
+      units_ordered: int(rng, 10, 900),
+      units_received: rng() < 0.07 ? "" : int(rng, 0, 900),
+      promised_date: promised.toISOString().slice(0, 10),
+      delivered_date: rng() < 0.09 ? "" : delivered.toISOString().slice(0, 10),
+      delay_days: rng() < 0.13 ? "" : delay,
+      freight_cost: rng() < 0.12 ? `$${(rng() * 900 + 12).toFixed(2)}` : +(rng() * 900 + 12).toFixed(2),
+      otif: delay <= 0 && rng() > 0.05 ? "Y" : pick(rng, ["N", "N", "y"]),
+      damage_flag: rng() < 0.06 ? pick(rng, ["Y", "y", "YES"]) : "N",
+    });
+  }
+  return rows.sort((a, b) => String(a.promised_date).localeCompare(String(b.promised_date)));
+}
+
+/* ---------------- mobile app events (HUGE CLEAN) ---------------- */
+function buildAppEvents(): Row[] {
+  const rng = mulberry32(121212);
+  const rows: Row[] = [];
+  const events = ["app_open", "screen_view", "search", "add_to_cart", "checkout_start", "purchase", "push_open", "share"];
+  const platforms = ["ios", "android", "web"];
+  const screens = ["home", "catalog", "product", "cart", "profile", "checkout", "settings"];
+  const countries = ["US", "GB", "DE", "IN", "BR", "JP", "CA", "FR", "AU", "NG"];
+  const start = new Date("2026-09-01T00:00:00Z");
+  for (let i = 1; i <= 11000; i++) {
+    const ts = new Date(start.getTime() + Math.floor(rng() * 28 * 86400000) + Math.floor(rng() * 86400) * 1000);
+    const platform = pick(rng, ["ios", "ios", "android", "android", "android", "web"]);
+    const funnel = events.indexOf(pick(rng, events));
+    rows.push({
+      event_id: i,
+      event_time: ts.toISOString().slice(0, 19).replace("T", " "),
+      user_id: `U${int(rng, 10000, 99999)}`,
+      event_name: events[Math.max(0, funnel)],
+      platform,
+      app_version: pick(rng, ["4.2.0", "4.2.1", "4.3.0", "4.3.1"]),
+      screen: pick(rng, screens),
+      session_min: +(rng() * 24).toFixed(1),
+      country: pick(rng, countries),
+      push_opt_in: rng() < 0.62 ? 1 : 0,
+    });
+  }
+  return rows.sort((a, b) => String(a.event_time).localeCompare(String(b.event_time)));
+}
+
 /* ---------------- module-level singletons ---------------- */
 const cache: Record<string, Dataset> = {};
 
@@ -908,6 +1012,72 @@ export function getInventory() {
   );
 }
 
+export function getBankTransactions() {
+  return makeDataset(
+    "bank_transactions",
+    "Bank Transactions Q1-Q4 (Huge, Messy)",
+    "8,200+ corporate-card lines: three date formats, $-text amounts, negatives, case-variant merchants, blanks and duplicate submissions — a realistic finance-cleaning workout.",
+    [
+      { key: "txn_id", name: "Txn ID", type: "text" },
+      { key: "posted_date", name: "Posted Date", type: "text" },
+      { key: "account_id", name: "Account", type: "text" },
+      { key: "merchant", name: "Merchant", type: "text" },
+      { key: "category", name: "Category", type: "text" },
+      { key: "txn_type", name: "Type", type: "text" },
+      { key: "amount", name: "Amount", type: "text" },
+      { key: "currency", name: "Currency", type: "text" },
+      { key: "branch", name: "Branch", type: "text" },
+      { key: "status", name: "Status", type: "text" },
+      { key: "balance_after", name: "Balance After", type: "number" },
+    ],
+    buildBankTransactions()
+  );
+}
+
+export function getDeliveries() {
+  return makeDataset(
+    "deliveries",
+    "Supplier Deliveries (Large, Messy)",
+    "2,400 shipments: case-variant supplier names, missing delivery dates and delays, $-text freight costs, sloppy Y/N flags — built for OTIF / supplier-scorecard analysis.",
+    [
+      { key: "shipment_id", name: "Shipment", type: "text" },
+      { key: "supplier", name: "Supplier", type: "text" },
+      { key: "region", name: "Region", type: "text" },
+      { key: "sku", name: "SKU", type: "text" },
+      { key: "units_ordered", name: "Units Ordered", type: "number" },
+      { key: "units_received", name: "Units Received", type: "text" },
+      { key: "promised_date", name: "Promised Date", type: "date" },
+      { key: "delivered_date", name: "Delivered Date", type: "text" },
+      { key: "delay_days", name: "Delay Days", type: "text" },
+      { key: "freight_cost", name: "Freight Cost", type: "text" },
+      { key: "otif", name: "OTIF", type: "text" },
+      { key: "damage_flag", name: "Damage", type: "text" },
+    ],
+    buildDeliveries()
+  );
+}
+
+export function getAppEvents() {
+  return makeDataset(
+    "app_events",
+    "Mobile App Events 28d (Huge, Clean)",
+    "11,000 clickstream events across iOS/Android/web — funnel steps, sessions, platforms and countries. Clean enough for dashboards the moment it loads.",
+    [
+      { key: "event_id", name: "Event ID", type: "number" },
+      { key: "event_time", name: "Event Time", type: "text" },
+      { key: "user_id", name: "User", type: "text" },
+      { key: "event_name", name: "Event", type: "text" },
+      { key: "platform", name: "Platform", type: "text" },
+      { key: "app_version", name: "App Version", type: "text" },
+      { key: "screen", name: "Screen", type: "text" },
+      { key: "session_min", name: "Session Minutes", type: "number" },
+      { key: "country", name: "Country", type: "text" },
+      { key: "push_opt_in", name: "Push Opt-in", type: "number" },
+    ],
+    buildAppEvents()
+  );
+}
+
 /* ---------------- sample-file catalog (for pickers & library) ---------------- */
 export interface SampleFileInfo {
   id: string;
@@ -931,6 +1101,7 @@ function sizeOf(n: number): SampleFileInfo["size"] {
 const CATALOG_IDS = [
   "clean_sales", "marketing", "hr", "traffic", "tickets", "crm_leads",
   "ecom_orders", "server_logs", "messy_sales", "messy_hr", "finance_gl", "inventory",
+  "bank_transactions", "deliveries", "app_events",
 ];
 
 let catalogCache: SampleFileInfo[] | null = null;
@@ -944,7 +1115,7 @@ export function getSampleCatalog(): SampleFileInfo[] {
         rows: ds.rows.length,
         cols: ds.columns.length,
         size: sizeOf(ds.rows.length),
-        messy: /messy|gl/i.test(ds.id) || ds.id === "inventory",
+        messy: /messy|gl|bank|deliveries|inventory/i.test(ds.id),
         description: ds.description,
       };
     }).sort((a, b) => SIZE_ORDER[a.size] - SIZE_ORDER[b.size] || a.name.localeCompare(b.name));
@@ -970,6 +1141,9 @@ export function getDatasetById(id: string): Dataset | undefined {
     case "messy_hr": return getMessyHR();
     case "crm_leads": return getCrmLeads();
     case "inventory": return getInventory();
+    case "bank_transactions": return getBankTransactions();
+    case "deliveries": return getDeliveries();
+    case "app_events": return getAppEvents();
     default: return undefined;
   }
 }
