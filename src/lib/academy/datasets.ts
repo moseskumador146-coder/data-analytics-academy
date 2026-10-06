@@ -743,6 +743,209 @@ function buildAppEvents(): Row[] {
   return rows.sort((a, b) => String(a.event_time).localeCompare(String(b.event_time)));
 }
 
+/* ---------------- payroll (small, clean) ---------------- */
+function buildPayroll(): Row[] {
+  const rng = mulberry32(4102);
+  const departments = ["Engineering", "Sales", "Marketing", "Finance", "Support", "Operations"];
+  const roles: Record<string, string[]> = {
+    Engineering: ["Software Engineer", "Data Engineer", "QA Engineer", "Engineering Manager"],
+    Sales: ["Account Executive", "SDR", "Sales Manager"],
+    Marketing: ["Content Lead", "Growth Analyst", "Designer"],
+    Finance: ["Controller", "Analyst", "AP Specialist"],
+    Support: ["Support Agent", "Support Lead"],
+    Operations: ["Ops Coordinator", "Logistics Analyst"],
+  };
+  const rows: Row[] = [];
+  for (let i = 1; i <= 120; i++) {
+    const dept = pick(rng, departments);
+    const base = int(rng, 48, 165) * 1000;
+    const bonus = Math.round(base * (rng() * 0.12));
+    const ot = rng() < 0.35 ? int(rng, 2, 40) * 125 : 0;
+    const deductions = Math.round((base + bonus + ot) * (0.22 + rng() * 0.06));
+    rows.push({
+      employee_id: `E${String(i).padStart(3, "0")}`,
+      name: `${pick(rng, FIRST)} ${pick(rng, LAST)}`,
+      department: dept,
+      role: pick(rng, roles[dept]),
+      base_salary: base,
+      bonus,
+      overtime_pay: ot,
+      deductions,
+      net_pay: base + bonus + ot - deductions,
+      payment_date: "2025-03-28",
+    });
+  }
+  return rows;
+}
+
+/* ---------------- social media campaigns (small, clean) ---------------- */
+function buildSocial(): Row[] {
+  const rng = mulberry32(5117);
+  const platforms = ["Instagram", "LinkedIn", "TikTok", "YouTube", "X (Twitter)"];
+  const months = ["2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06"];
+  const rows: Row[] = [];
+  let id = 1;
+  for (const m of months) for (const p of platforms) {
+    for (let c = 0; c < 4; c++) {
+      const impressions = int(rng, 8, 420) * 1000;
+      const engagementRate = 0.01 + rng() * 0.07;
+      const engagements = Math.round(impressions * engagementRate);
+      const clicks = Math.round(engagements * (0.08 + rng() * 0.25));
+      const spend = int(rng, 4, 60) * 100;
+      const conversions = Math.round(clicks * (0.01 + rng() * 0.06));
+      rows.push({
+        campaign_id: `CAMP-${String(id++).padStart(3, "0")}`,
+        platform: p,
+        month: m,
+        objective: pick(rng, ["Awareness", "Traffic", "Conversions", "Retention"]),
+        posts: int(rng, 2, 24),
+        impressions,
+        engagements,
+        clicks,
+        spend,
+        conversions,
+        revenue: conversions * int(rng, 30, 140),
+      });
+    }
+  }
+  return rows;
+}
+
+/* ---------------- hospital appointments (medium, messy) ---------------- */
+function buildHospital(): Row[] {
+  const rng = mulberry32(6219);
+  const departments = ["Cardiology", "Orthopedics", "Dermatology", "Neurology", "Pediatrics", "General"];
+  const statuses = ["Completed", "completed ", "COMPLETED", "Cancelled", "No-Show", "Rescheduled"];
+  const insurances = ["Aetna", "aetna", "BlueCross", " United ", "Medicare", "Self-pay"];
+  const rows: Row[] = [];
+  for (let i = 1; i <= 900; i++) {
+    // date in 3 mixed formats
+    const d = new Date(Date.UTC(2025, int(rng, 0, 5), int(rng, 1, 28)));
+    const dateFmt = pick(rng, ["iso", "us", "slash"]);
+    const dateStr = dateFmt === "iso" ? d.toISOString().slice(0, 10)
+      : dateFmt === "us" ? `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")}/${d.getUTCFullYear()}`
+        : `${String(d.getUTCDate()).padStart(2, "0")}-${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" })}-${d.getUTCFullYear()}`;
+    const fee = rng() < 0.1 ? null : `$${int(rng, 60, 480)}`;
+    const wait = rng() < 0.08 ? "" : String(int(rng, 3, 95));
+    rows.push({
+      appt_id: `APT-${String(i).padStart(4, "0")}`,
+      patient: `${pick(rng, FIRST)} ${pick(rng, LAST)}`,
+      department: rng() < 0.06 ? String(pick(rng, departments)).toUpperCase() : pick(rng, departments),
+      doctor: `Dr. ${pick(rng, LAST)}`,
+      appt_date: dateStr,
+      wait_minutes: wait,
+      fee,
+      insurance: pick(rng, insurances),
+      status: pick(rng, statuses),
+      follow_up: rng() < 0.3 ? "Yes" : "No",
+    });
+  }
+  // duplicate submissions like a real RIS export
+  const dupes = rows.filter((_, i) => i % 97 === 5).map((r) => ({ ...r }));
+  return [...rows, ...dupes];
+}
+
+/* ---------------- SaaS subscriptions (medium, clean) ---------------- */
+function buildSubscriptions(): Row[] {
+  const rng = mulberry32(7311);
+  const plans: { name: string; mrr: number }[] = [
+    { name: "Starter", mrr: 29 }, { name: "Growth", mrr: 99 }, { name: "Pro", mrr: 249 }, { name: "Enterprise", mrr: 899 },
+  ];
+  const regions = ["NA", "EMEA", "APAC", "LATAM"];
+  const channels = ["Organic", "Paid", "Referral", "Outbound"];
+  const rows: Row[] = [];
+  for (let i = 1; i <= 750; i++) {
+    const plan = pick(rng, plans);
+    const seats = plan.name === "Enterprise" ? int(rng, 25, 300) : int(rng, 1, 24);
+    const monthsActive = int(rng, 1, 38);
+    const churned = rng() < 0.24;
+    const signup = new Date(Date.UTC(2022, 0, 1) + Math.floor(rng() * 1050) * 86400000);
+    rows.push({
+      sub_id: `SUB-${String(i).padStart(4, "0")}`,
+      customer: `${pick(rng, FIRST)} ${pick(rng, LAST)}` + (rng() < 0.2 ? ` (${pick(rng, ["LLC", "Inc", "Ltd", "GmbH"])})` : ""),
+      plan: plan.name,
+      region: pick(rng, regions),
+      channel: pick(rng, channels),
+      signup_date: signup.toISOString().slice(0, 10),
+      seats,
+      mrr: plan.mrr + (seats > 10 ? int(rng, 0, 120) : 0),
+      months_active: monthsActive,
+      churned: churned ? "Yes" : "No",
+      nps: int(rng, 1, 10),
+    });
+  }
+  return rows;
+}
+
+/* ---------------- stock prices (large, clean) ---------------- */
+function buildStocks(): Row[] {
+  const rng = mulberry32(8412);
+  const tickers: { t: string; sector: string; p0: number }[] = [
+    { t: "AAPL", sector: "Technology", p0: 182 },
+    { t: "MSFT", sector: "Technology", p0: 374 },
+    { t: "JPM", sector: "Financials", p0: 195 },
+    { t: "XOM", sector: "Energy", p0: 108 },
+    { t: "WMT", sector: "Retail", p0: 61 },
+    { t: "NVDA", sector: "Technology", p0: 485 },
+    { t: "UNH", sector: "Healthcare", p0: 526 },
+  ];
+  const rows: Row[] = [];
+  const start = Date.UTC(2025, 0, 2);
+  for (const { t, sector, p0 } of tickers) {
+    let price = p0;
+    for (let d = 0; d < 360; d++) {
+      const day = new Date(start + d * 86400000);
+      const dow = day.getUTCDay();
+      if (dow === 0 || dow === 6) continue; // trading days only
+      const drift = (rng() - 0.485) * 0.024;
+      const open = price;
+      const close = +(open * (1 + drift)).toFixed(2);
+      const high = +(Math.max(open, close) * (1 + rng() * 0.008)).toFixed(2);
+      const low = +(Math.min(open, close) * (1 - rng() * 0.008)).toFixed(2);
+      rows.push({
+        date: day.toISOString().slice(0, 10),
+        ticker: t,
+        sector,
+        open: +open.toFixed(2),
+        high,
+        low,
+        close,
+        volume: int(rng, 8, 90) * 100_000,
+      });
+      price = close;
+    }
+  }
+  return rows;
+}
+
+/* ---------------- IoT sensor readings (huge, clean) ---------------- */
+function buildIot(): Row[] {
+  const rng = mulberry32(9523);
+  const sites = ["Warehouse A", "Warehouse B", "Cold Store", "Production Floor"];
+  const devices: string[] = [];
+  for (let i = 1; i <= 24; i++) devices.push(`TH-${String(i).padStart(3, "0")}`);
+  const rows: Row[] = [];
+  const start = Date.UTC(2025, 8, 1);
+  for (let i = 0; i < 15000; i++) {
+    const device = pick(rng, devices);
+    const site = sites[Math.floor((parseInt(device.slice(3), 10) - 1) / 6)];
+    const ts = new Date(start + Math.floor(rng() * 7 * 24 * 3600) * 1000);
+    const cold = site === "Cold Store";
+    rows.push({
+      reading_id: i + 1,
+      device_id: device,
+      site,
+      temperature: +(cold ? 2 + rng() * 6 : 16 + rng() * 14).toFixed(1),
+      humidity: +(cold ? 60 + rng() * 25 : 30 + rng() * 40).toFixed(1),
+      battery: int(rng, 12, 100),
+      signal: int(rng, 35, 100),
+      event_time: ts.toISOString().slice(0, 19).replace("T", " "),
+      alert: rng() < 0.035 ? "Yes" : "No",
+    });
+  }
+  return rows;
+}
+
 /* ---------------- module-level singletons ---------------- */
 const cache: Record<string, Dataset> = {};
 
@@ -1078,6 +1281,131 @@ export function getAppEvents() {
   );
 }
 
+export function getPayroll() {
+  return makeDataset(
+    "payroll",
+    "Payroll March 2025 (Small, Clean)",
+    "One monthly payroll run for 120 employees — salary, bonus, overtime, deductions and net pay.",
+    [
+      { key: "employee_id", name: "Employee ID", type: "text" },
+      { key: "name", name: "Name", type: "text" },
+      { key: "department", name: "Department", type: "text" },
+      { key: "role", name: "Role", type: "text" },
+      { key: "base_salary", name: "Base Salary", type: "currency" },
+      { key: "bonus", name: "Bonus", type: "currency" },
+      { key: "overtime_pay", name: "Overtime Pay", type: "currency" },
+      { key: "deductions", name: "Deductions", type: "currency" },
+      { key: "net_pay", name: "Net Pay", type: "currency" },
+      { key: "payment_date", name: "Payment Date", type: "date" },
+    ],
+    buildPayroll()
+  );
+}
+
+export function getSocial() {
+  return makeDataset(
+    "social",
+    "Social Media Campaigns H1-2025 (Small, Clean)",
+    "120 campaigns across five platforms — spend, impressions, engagements, clicks, conversions and revenue.",
+    [
+      { key: "campaign_id", name: "Campaign ID", type: "text" },
+      { key: "platform", name: "Platform", type: "text" },
+      { key: "month", name: "Month", type: "text" },
+      { key: "objective", name: "Objective", type: "text" },
+      { key: "posts", name: "Posts", type: "number" },
+      { key: "impressions", name: "Impressions", type: "number" },
+      { key: "engagements", name: "Engagements", type: "number" },
+      { key: "clicks", name: "Clicks", type: "number" },
+      { key: "spend", name: "Spend", type: "currency" },
+      { key: "conversions", name: "Conversions", type: "number" },
+      { key: "revenue", name: "Revenue", type: "currency" },
+    ],
+    buildSocial()
+  );
+}
+
+export function getHospital() {
+  return makeDataset(
+    "hospital",
+    "Hospital Appointments (Medium, Messy)",
+    "Six months of appointments from a legacy RIS: mixed-case statuses, 3 date formats, $ text fees, blank waits and duplicate submissions.",
+    [
+      { key: "appt_id", name: "Appt ID", type: "text" },
+      { key: "patient", name: "Patient", type: "text" },
+      { key: "department", name: "Department", type: "text" },
+      { key: "doctor", name: "Doctor", type: "text" },
+      { key: "appt_date", name: "Appt Date", type: "text" },
+      { key: "wait_minutes", name: "Wait Minutes", type: "text" },
+      { key: "fee", name: "Fee", type: "text" },
+      { key: "insurance", name: "Insurance", type: "text" },
+      { key: "status", name: "Status", type: "text" },
+      { key: "follow_up", name: "Follow-up", type: "text" },
+    ],
+    buildHospital()
+  );
+}
+
+export function getSubscriptions() {
+  return makeDataset(
+    "subscriptions",
+    "SaaS Subscriptions (Medium, Clean)",
+    "750 subscription records with plan, region, MRR, seats, tenure, NPS and a churn flag — perfect cohort material.",
+    [
+      { key: "sub_id", name: "Sub ID", type: "text" },
+      { key: "customer", name: "Customer", type: "text" },
+      { key: "plan", name: "Plan", type: "text" },
+      { key: "region", name: "Region", type: "text" },
+      { key: "channel", name: "Channel", type: "text" },
+      { key: "signup_date", name: "Signup Date", type: "date" },
+      { key: "seats", name: "Seats", type: "number" },
+      { key: "mrr", name: "MRR", type: "currency" },
+      { key: "months_active", name: "Months Active", type: "number" },
+      { key: "churned", name: "Churned", type: "text" },
+      { key: "nps", name: "NPS", type: "number" },
+    ],
+    buildSubscriptions()
+  );
+}
+
+export function getStocks() {
+  return makeDataset(
+    "stocks",
+    "Stock Prices 1y (Large, Clean)",
+    "A trading year of daily OHLC prices for 7 large-cap tickers — trend lines, volatility and returns.",
+    [
+      { key: "date", name: "Date", type: "date" },
+      { key: "ticker", name: "Ticker", type: "text" },
+      { key: "sector", name: "Sector", type: "text" },
+      { key: "open", name: "Open", type: "currency" },
+      { key: "high", name: "High", type: "currency" },
+      { key: "low", name: "Low", type: "currency" },
+      { key: "close", name: "Close", type: "currency" },
+      { key: "volume", name: "Volume", type: "number" },
+    ],
+    buildStocks()
+  );
+}
+
+export function getIot() {
+  return makeDataset(
+    "iot",
+    "IoT Sensor Readings 7d (Huge, Clean)",
+    "15,000 temperature/humidity readings from 24 devices across 4 sites — alerts, battery and signal included.",
+    [
+      { key: "reading_id", name: "Reading ID", type: "number" },
+      { key: "device_id", name: "Device", type: "text" },
+      { key: "site", name: "Site", type: "text" },
+      { key: "temperature", name: "Temperature °C", type: "number" },
+      { key: "humidity", name: "Humidity %", type: "number" },
+      { key: "battery", name: "Battery %", type: "number" },
+      { key: "signal", name: "Signal %", type: "number" },
+      { key: "event_time", name: "Event Time", type: "text" },
+      { key: "alert", name: "Alert", type: "text" },
+    ],
+    buildIot()
+  );
+}
+
 /* ---------------- sample-file catalog (for pickers & library) ---------------- */
 export interface SampleFileInfo {
   id: string;
@@ -1102,6 +1430,7 @@ const CATALOG_IDS = [
   "clean_sales", "marketing", "hr", "traffic", "tickets", "crm_leads",
   "ecom_orders", "server_logs", "messy_sales", "messy_hr", "finance_gl", "inventory",
   "bank_transactions", "deliveries", "app_events",
+  "payroll", "social", "hospital", "subscriptions", "stocks", "iot",
 ];
 
 let catalogCache: SampleFileInfo[] | null = null;
@@ -1144,6 +1473,12 @@ export function getDatasetById(id: string): Dataset | undefined {
     case "bank_transactions": return getBankTransactions();
     case "deliveries": return getDeliveries();
     case "app_events": return getAppEvents();
+    case "payroll": return getPayroll();
+    case "social": return getSocial();
+    case "hospital": return getHospital();
+    case "subscriptions": return getSubscriptions();
+    case "stocks": return getStocks();
+    case "iot": return getIot();
     default: return undefined;
   }
 }

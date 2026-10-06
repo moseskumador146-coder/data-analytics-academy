@@ -1,0 +1,462 @@
+   920→        const v = parseFloat(raw.replace(/[$,\s]/g, ""));
+   921→        if (!isNaN(v)) { numCount++; sum += v; }
+   922→      }
+   923→    }
+   924→    return { count, numCount, sum, avg: numCount ? sum / numCount : 0 };
+   925→  }, [cells, styles, sel, hidden, sheets]);
+   926→
+   927→  const colStats = React.useMemo(() => {
+   928→    const vals: number[] = [];
+   929→    for (let r = 0; r < usedR; r++) {
+   930→      const raw = displayValue(refFor(selectedColIdx, r), cells, styles);
+   931→      const v = parseFloat(raw.replace(/[$,\s]/g, ""));
+   932→      if (!isNaN(v) && raw !== "") vals.push(v);
+   933→    }
+   934→    if (vals.length < 1) return null;
+   935→    const sorted = [...vals].sort((a, b) => a - b);
+   936→    const sum = vals.reduce((s, x) => s + x, 0);
+   937→    const mean = sum / vals.length;
+   938→    const mid = Math.floor(sorted.length / 2);
+   939→    const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+   940→    const std = sorted.length > 1 ? Math.sqrt(vals.reduce((s, x) => s + (x - mean) ** 2, 0) / (vals.length - 1)) : 0;
+   941→    return { n: vals.length, sum, mean, median, std, min: sorted[0], max: sorted[sorted.length - 1] };
+   942→  }, [cells, styles, selectedColIdx, usedR, sheets]);
+   943→
+   944→  /* ---------- mouse: grid drag, fill handle, col resize ---------- */
+   945→  const onGridMouseMove = (e: React.MouseEvent) => {
+   946→    if (resizeRef.current) {
+   947→      const w = Math.max(48, resizeRef.current.startW + e.clientX - resizeRef.current.startX);
+   948→      setResizing(w);
+   949→      return;
+   950→    }
+   951→  };
+   952→  const onGridMouseUp = () => {
+   953→    if (resizeRef.current && resizing !== null) {
+   954→      const col = resizeRef.current.col;
+   955→      const w = resizing;
+   956→      updateSheet(sheet.id, (s) => ({ colW: { ...s.colW, [col]: w } }));
+   957→    }
+   958→    resizeRef.current = null;
+   959→    setResizing(null);
+   960→    dragRef.current = null;
+   961→  };
+   962→
+   963→  const FORMULA_BUTTONS: { label: string; tpl: string; hint: string }[] = [
+   964→    { label: "SUM", tpl: "=SUM(K2:K50)", hint: "Add a range of numbers" },
+   965→    { label: "AVERAGE", tpl: "=AVERAGE(K2:K50)", hint: "Arithmetic mean" },
+   966→    { label: "MEDIAN", tpl: "=MEDIAN(K2:K50)", hint: "Middle value (robust to outliers)" },
+   967→    { label: "COUNT", tpl: "=COUNT(K2:K50)", hint: "Count numeric cells" },
+   968→    { label: "COUNTA", tpl: "=COUNTA(A2:A50)", hint: "Count non-empty cells" },
+   969→    { label: "IF", tpl: '=IF(J2>1000,"Big","Small")', hint: "Conditional logic" },
+   970→    { label: "IFERROR", tpl: '=IFERROR(J2/K2,"n/a")', hint: "Trap errors with a fallback" },
+   971→    { label: "SUMIF", tpl: '=SUMIF(F:F,"North",I:I)', hint: "Conditional sum" },
+   972→    { label: "SUMIFS", tpl: '=SUMIFS(I:I,F:F,"North",E:E,"Retail")', hint: "Sum with multiple criteria" },
+   973→    { label: "COUNTIF", tpl: '=COUNTIF(I:I,">500")', hint: "Conditional count" },
+   974→    { label: "COUNTIFS", tpl: '=COUNTIFS(F:F,"North",I:I,">500")', hint: "Count with multiple criteria" },
+   975→    { label: "AVERAGEIF", tpl: '=AVERAGEIF(F:F,"West",I:I)', hint: "Conditional average" },
+   976→    { label: "VLOOKUP", tpl: '=VLOOKUP("Office Chair",G2:H21,2,FALSE)', hint: "Classic table lookup" },
+   977→    { label: "XLOOKUP", tpl: '=XLOOKUP("Office Chair",G2:G21,I2:I21,"not found")', hint: "Modern lookup — any direction" },
+   978→    { label: "INDEX", tpl: "=INDEX(I2:I21,3)", hint: "Value at position in a range" },
+   979→    { label: "MATCH", tpl: '=MATCH("Office Chair",G2:G21,0)', hint: "Position of a value (pairs with INDEX)" },
+   980→    { label: "ROUND", tpl: "=ROUND(J2/12,2)", hint: "Round to N decimals" },
+   981→    { label: "TEXTJOIN", tpl: '=TEXTJOIN(" ",1,B2,C2)', hint: "Join values with a separator" },
+   982→  ];
+   983→
+   984→  /* dynamic coach tips */
+   985→  const tips: string[] = React.useMemo(() => {
+   986→    const t: string[] = [];
+   987→    if (usedR <= 1) {
+   988→      t.push("The sheet is empty. Load a sample file from the picker above — try **Retail Sales 2025 (Clean)** first.");
+   989→    } else {
+   990→      if (formulaCount === 0) t.push("You have data but no formulas yet. Click an empty cell under the last column and type ~ =SUM(I2:I50) ~ — then press Enter.");
+   991→      else if (formulaCount < 3) t.push(`Nice — ${formulaCount} formula${formulaCount > 1 ? "s" : ""} so far. Grab the small **fill handle** at the corner of the selection and drag down to copy the formula with shifted references.`);
+   992→      if (colStats && colStats.n > 5) {
+   993→        const skew = Math.abs(colStats.mean - colStats.median) / Math.max(1, Math.abs(colStats.median));
+   994→        t.push(skew > 0.25
+   995→          ? `Column ${colName(selectedColIdx)} is skewed (mean ${fmtNum(colStats.mean)} vs median ${fmtNum(colStats.median)}). In reports, quote the **median**.`
+   996→          : `Column ${colName(selectedColIdx)} is fairly symmetric — the mean ${fmtNum(colStats.mean)} is a safe summary.`);
+   997→      }
+   998→      t.push("Real Excel moves: **Ctrl+B** bold, **Ctrl+C / Ctrl+V** copy-paste, drag the fill handle, right-click for the context menu, **Ctrl+Z** to undo.");
+   999→    }
+  1000→    return t.slice(0, 3);
+  1001→  }, [usedR, formulaCount, colStats, selectedColIdx]);
+  1002→
+  1003→  if (!loaded || !sheet) return <div className={`${PANEL} h-64 animate-pulse`} />;
+  1004→
+  1005→  const frozenTop = sheet.freeze === "top" || sheet.freeze === "both";
+  1006→  const frozenFirst = sheet.freeze === "first" || sheet.freeze === "both";
+  1007→  const frozenTopPx = 27; // header row height
+  1008→
+  1009→  /* ---------------------------------------------------------------- */
+  1010→  return (
+  1011→    <div className="space-y-4" onMouseDown={() => { setCtxMenu(null); setColorMenu(null); setCfMenu(false); setFreezeMenu(false); setAutosumMenu(false); setSheetMenu(null); }}>
+  1012→      <ToolHeader
+  1013→        icon={<FileSpreadsheet className="h-5 w-5 text-emerald-500 dark:text-emerald-400" />}
+  1014→        title="Excel Studio"
+  1015→        subtitle="The real Excel experience in your browser — ribbon, formatting, formulas, filters, charts, sheets"
+  1016→        actions={
+  1017→          <>
+  1018→            <DatasetPicker onPick={loadDataset} />
+  1019→            {loadedInfo && <span className="hidden max-w-[260px] truncate text-[11px] text-muted-foreground lg:inline" title={loadedInfo}>{loadedInfo}</span>}
+  1020→            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} />
+  1021→          </>
+  1022→        }
+  1023→      />
+  1024→
+  1025→      {/* ============ formula bar ============ */}
+  1026→      <div className={`${PANEL} flex items-stretch gap-0 overflow-visible`}>
+  1027→        <input
+  1028→          className="w-24 shrink-0 rounded-l-xl border-r border-border bg-muted/50 px-3 text-center font-mono text-[13px] font-bold text-emerald-700 outline-none dark:text-emerald-300"
+  1029→          value={nameBoxVal ?? active}
+  1030→          onChange={(e) => setNameBoxVal(e.target.value)}
+  1031→          onBlur={() => setNameBoxVal(null)}
+  1032→          onKeyDown={(e) => {
+  1033→            if (e.key === "Enter" && nameBoxVal) {
+  1034→              const p = parseRef(nameBoxVal.trim());
+  1035→              if (p) { setSel({ a: p, b: p }); setNameBoxVal(null); gridRef.current?.focus(); }
+  1036→              else setNameBoxVal(null);
+  1037→            }
+  1038→            if (e.key === "Escape") setNameBoxVal(null);
+  1039→          }}
+  1040→          aria-label="Name box — type a cell reference and press Enter"
+  1041→        />
+  1042→        <div className="flex shrink-0 items-center border-r border-border px-2.5 font-serif text-[13px] italic text-muted-foreground" title="Insert function">fx</div>
+  1043→        <div className="flex min-w-0 flex-1 items-center gap-1 px-2">
+  1044→          <input
+  1045→            className="min-w-0 flex-1 bg-transparent py-2 font-mono text-[13px] text-foreground outline-none placeholder:text-muted-foreground/50"
+  1046→            placeholder="Type a value or =SUM(I2:I50) · =XLOOKUP(“Office Chair”,G:G,I:I)"
+  1047→            value={editVal ?? activeRaw}
+  1048→            onChange={(e) => setEditVal(e.target.value)}
+  1049→            onKeyDown={(e) => {
+  1050→              if (e.key === "Enter") commit("down");
+  1051→              if (e.key === "Escape") { setEditVal(null); gridRef.current?.focus(); }
+  1052→            }}
+  1053→            onFocus={() => { if (editVal === null) setEditVal(activeRaw || ""); }}
+  1054→            aria-label="Formula bar"
+  1055→          />
+  1056→          {editVal !== null && (
+  1057→            <>
+  1058→              <button className="rounded p-1 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-300" title="Enter ✓" onClick={() => commit()}><Check className="h-4 w-4" /></button>
+  1059→              <button className="rounded p-1 text-red-500 hover:bg-red-500/10" title="Cancel ✗" onClick={() => { setEditVal(null); gridRef.current?.focus(); }}><X className="h-4 w-4" /></button>
+  1060→            </>
+  1061→          )}
+  1062→        </div>
+  1063→      </div>
+  1064→
+  1065→      {/* ============ ribbon ============ */}
+  1066→      <div className={`${PANEL} overflow-visible`}>
+  1067→        <div className="flex items-center gap-0.5 border-b border-border px-2 pt-1" role="tablist" aria-label="Excel ribbon tabs">
+  1068→          {([
+  1069→            ["home", "Home"], ["insert", "Insert"], ["formulas", "Formulas"],
+  1070→            ["data", "Data"], ["review", "Review"], ["view", "View"],
+  1071→          ] as const).map(([id, label]) => (
+  1072→            <button
+  1073→              key={id}
+  1074→              role="tab"
+  1075→              aria-selected={ribbonTab === id}
+  1076→              onClick={() => { setRibbonTab(id); setRibbonOpen(true); }}
+  1077→              className={`rounded-t-lg px-3.5 py-1.5 text-[12.5px] font-semibold transition-colors ${
+  1078→                ribbonTab === id
+  1079→                  ? "border border-b-0 border-border bg-muted/60 text-emerald-700 dark:text-emerald-300"
+  1080→                  : "text-muted-foreground hover:bg-muted/50"
+  1081→              }`}
+  1082→            >
+  1083→              {label}
+  1084→            </button>
+  1085→          ))}
+  1086→          <button className="ml-auto rounded p-1.5 text-muted-foreground hover:bg-muted" title={ribbonOpen ? "Collapse the ribbon" : "Expand the ribbon"} onClick={() => setRibbonOpen((o) => !o)}>
+  1087→            {ribbonOpen ? <PanelTopOpen className="h-3.5 w-3.5" /> : <PanelTop className="h-3.5 w-3.5" />}
+  1088→          </button>
+  1089→        </div>
+  1090→
+  1091→        {ribbonOpen && (
+  1092→          <div className="flex flex-wrap items-stretch gap-0 px-1.5 py-1.5 text-xs">
+  1093→            <Group label="Clipboard">
+  1094→              <RibbonBtn title="Copy (Ctrl+C)" onClick={() => copySel(false)}><Copy className="h-4 w-4" /></RibbonBtn>
+  1095→              <RibbonBtn title="Cut (Ctrl+X)" onClick={() => copySel(true)}><Scissors className="h-4 w-4" /></RibbonBtn>
+  1096→              <RibbonBtn title="Paste (Ctrl+V)" onClick={pasteAt} disabled={!clipboard}><Clipboard className="h-4 w-4" /></RibbonBtn>
+  1097→            </Group>
+  1098→
+  1099→            {ribbonTab === "home" && (
+  1100→              <>
+  1101→                <Group label="Undo">
+  1102→                  <RibbonBtn title="Undo (Ctrl+Z)" onClick={undo} disabled={!undoDepth}><Undo2 className="h-4 w-4" /></RibbonBtn>
+  1103→                  <RibbonBtn title="Redo (Ctrl+Y)" onClick={redo} disabled={!redoDepth}><Redo2 className="h-4 w-4" /></RibbonBtn>
+  1104→                </Group>
+  1105→                <Group label="Font">
+  1106→                  <RibbonBtn title="Bold (Ctrl+B)" active={!!activeStyle?.b} onClick={() => toggleStyle("b")}><Bold className="h-4 w-4" /></RibbonBtn>
+  1107→                  <RibbonBtn title="Italic (Ctrl+I)" active={!!activeStyle?.i} onClick={() => toggleStyle("i")}><Italic className="h-4 w-4" /></RibbonBtn>
+  1108→                  <RibbonBtn title="Underline (Ctrl+U)" active={!!activeStyle?.u} onClick={() => toggleStyle("u")}><Underline className="h-4 w-4" /></RibbonBtn>
+  1109→                  <select
+  1110→                    className="h-7 rounded-md border border-border bg-card px-1 text-[11px]"
+  1111→                    value={activeStyle?.sz ?? 13}
+  1112→                    onChange={(e) => applyStyleToSel({ sz: +e.target.value })}
+  1113→                    title="Font size"
+  1114→                    aria-label="Font size"
+  1115→                  >
+  1116→                    {[10, 11, 12, 13, 16, 18, 24].map((s) => <option key={s} value={s}>{s}</option>)}
+  1117→                  </select>
+  1118→                  <ColorBtn
+  1119→                    icon={<Baseline className="h-4 w-4" />}
+  1120→                    title="Font color"
+  1121→                    swatch={activeStyle?.fc ?? "#111827"}
+  1122→                    open={colorMenu === "fc"}
+  1123→                    onToggle={() => setColorMenu(colorMenu === "fc" ? null : "fc")}
+  1124→                    onPick={(c) => { applyStyleToSel({ fc: c }); setColorMenu(null); }}
+  1125→                    colors={FONT_COLORS}
+  1126→                    noneLabel="Automatic"
+  1127→                  />
+  1128→                  <ColorBtn
+  1129→                    icon={<PaintBucket className="h-4 w-4" />}
+  1130→                    title="Fill color"
+  1131→                    swatch={activeStyle?.bg || ""}
+  1132→                    open={colorMenu === "bg"}
+  1133→                    onToggle={() => setColorMenu(colorMenu === "bg" ? null : "bg")}
+  1134→                    onPick={(c) => { applyStyleToSel({ bg: c || undefined }); setColorMenu(null); }}
+  1135→                    colors={FILL_COLORS}
+  1136→                    noneLabel="No fill"
+  1137→                  />
+  1138→                  <RibbonBtn title="Borders on/off for the selection" active={!!activeStyle?.bd} onClick={() => applyStyleToSel({ bd: !activeStyle?.bd })}><Grid2x2 className="h-4 w-4" /></RibbonBtn>
+  1139→                </Group>
+  1140→                <Group label="Alignment">
+  1141→                  <RibbonBtn title="Align left" active={activeStyle?.al === "l"} onClick={() => applyStyleToSel({ al: "l" })}><AlignLeft className="h-4 w-4" /></RibbonBtn>
+  1142→                  <RibbonBtn title="Align center" active={activeStyle?.al === "c"} onClick={() => applyStyleToSel({ al: "c" })}><AlignCenter className="h-4 w-4" /></RibbonBtn>
+  1143→                  <RibbonBtn title="Align right" active={activeStyle?.al === "r"} onClick={() => applyStyleToSel({ al: "r" })}><AlignRight className="h-4 w-4" /></RibbonBtn>
+  1144→                </Group>
+  1145→                <Group label="Number">
+  1146→                  <select
+  1147→                    className="h-7 w-28 rounded-md border border-border bg-card px-1 text-[11px]"
+  1148→                    value={activeStyle?.nf ?? "general"}
+  1149→                    onChange={(e) => applyStyleToSel({ nf: e.target.value as NumFmt })}
+  1150→                    title="Number format"
+  1151→                    aria-label="Number format"
+  1152→                  >
+  1153→                    <option value="general">General</option>
+  1154→                    <option value="number">Number (1,234.00)</option>
+  1155→                    <option value="currency">Currency ($1,234.00)</option>
+  1156→                    <option value="comma">Comma (1,234)</option>
+  1157→                    <option value="percent">Percent (50%)</option>
+  1158→                    <option value="text">Text</option>
+  1159→                  </select>
+  1160→                  <RibbonBtn title="Quick currency" onClick={() => applyStyleToSel({ nf: "currency" })}><DollarSign className="h-4 w-4" /></RibbonBtn>
+  1161→                  <RibbonBtn title="Quick percent" onClick={() => applyStyleToSel({ nf: "percent" })}><Percent className="h-4 w-4" /></RibbonBtn>
+  1162→                  <RibbonBtn title="Quick comma" onClick={() => applyStyleToSel({ nf: "comma" })}><Hash className="h-4 w-4" /></RibbonBtn>
+  1163→                </Group>
+  1164→                <Group label="Styles">
+  1165→                  <div className="relative">
+  1166→                    <RibbonBtn title="Conditional formatting — highlight what matters" active={cfMenu} onClick={() => setCfMenu((v) => !v)}><Highlighter className="h-4 w-4" /></RibbonBtn>
+  1167→                    {cfMenu && (
+  1168→                      <Menu>
+  1169→                        <p className="px-2 pb-1 pt-1.5 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Highlight cells in column {colName(selectedColIdx)}</p>
+  1170→                        <MenuItem onClick={() => { const v = window.prompt("Highlight cells GREATER than…", "1000"); if (v) addCfRule("gt", v, CF_COLORS[0]); }}>Greater than…</MenuItem>
+  1171→                        <MenuItem onClick={() => { const v = window.prompt("Highlight cells LESS than…", "100"); if (v) addCfRule("lt", v, CF_COLORS[2]); }}>Less than…</MenuItem>
+  1172→                        <MenuItem onClick={() => { const v = window.prompt("Highlight cells containing text…", "refund"); if (v) addCfRule("contains", v, CF_COLORS[1]); }}>Text contains…</MenuItem>
+  1173→                        {sheet.cfRules.length > 0 && (
+  1174→                          <>
+  1175→                            <div className="my-1 h-px bg-border" />
+  1176→                            <MenuItem onClick={() => { pushUndo(); updateSheet(sheet.id, { cfRules: [] }); setCfMenu(false); }}><RotateCcw className="mr-1.5 inline h-3 w-3" /> Clear all rules ({sheet.cfRules.length})</MenuItem>
+  1177→                          </>
+  1178→                        )}
+  1179→                      </Menu>
+  1180→                    )}
+  1181→                  </div>
+  1182→                  <RibbonBtn title="Clear formatting in selection" onClick={clearFormatSel}><Eraser className="h-4 w-4" /></RibbonBtn>
+  1183→                </Group>
+  1184→                <Group label="Cells">
+  1185→                  <RibbonBtn title="Insert row above selection" onClick={() => shiftRows(nSel.r1, 1)}><Plus className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Row</span></RibbonBtn>
+  1186→                  <RibbonBtn title="Insert column left of selection" onClick={() => shiftCols(nSel.c1, 1)}><Plus className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Col</span></RibbonBtn>
+  1187→                  <RibbonBtn title="Delete selected row" onClick={() => shiftRows(nSel.r1, -1)}><Trash2 className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Row</span></RibbonBtn>
+  1188→                  <RibbonBtn title="Delete selected column" onClick={() => shiftCols(nSel.c1, -1)}><Trash2 className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Col</span></RibbonBtn>
+  1189→                </Group>
+  1190→                <Group label="Editing">
+  1191→                  <RibbonBtn title="Sort A→Z by selected column" onClick={() => sortRows(selectedColIdx, 1)}><ArrowUpNarrowWide className="h-4 w-4" /></RibbonBtn>
+  1192→                  <RibbonBtn title="Sort Z→A by selected column" onClick={() => sortRows(selectedColIdx, -1)}><ArrowDownWideNarrow className="h-4 w-4" /></RibbonBtn>
+  1193→                  <RibbonBtn title="Remove duplicate rows" onClick={dedupeRows}><Wand2 className="h-4 w-4" /></RibbonBtn>
+  1194→                  <RibbonBtn title="Find & Replace (Ctrl+F)" onClick={() => setFindDlg({ find: "", replace: "", results: [] })}><Search className="h-4 w-4" /></RibbonBtn>
+  1195→                  <RibbonBtn title="Clear the whole sheet" onClick={() => { pushUndo(); updateSheet(sheet.id, { cells: {}, styles: {} }); setHidden({}); setCharts([]); setLoadedInfo(null); }}><Trash2 className="h-4 w-4" /></RibbonBtn>
+  1196→                </Group>
+  1197→              </>
+  1198→            )}
+  1199→
+  1200→            {ribbonTab === "insert" && (
+  1201→              <Group label="Charts — select your data first">
+  1202→                <RibbonBtn title="Insert a column chart from the selection" onClick={() => insertChart("col")}><ChartColumn className="h-5 w-5" /><span className="ml-1 text-[10.5px]">Column</span></RibbonBtn>
+  1203→                <RibbonBtn title="Insert a line chart from the selection" onClick={() => insertChart("line")}><ChartLine className="h-5 w-5" /><span className="ml-1 text-[10.5px]">Line</span></RibbonBtn>
+  1204→                <RibbonBtn title="Insert a pie chart from the selection" onClick={() => insertChart("pie")}><ChartPie className="h-5 w-5" /><span className="ml-1 text-[10.5px]">Pie</span></RibbonBtn>
+  1205→                <p className="self-center px-2 text-[11px] leading-snug text-muted-foreground">Select a range with labels in the first<br />column and numbers beside them.</p>
+  1206→              </Group>
+  1207→            )}
+  1208→
+  1209→            {ribbonTab === "formulas" && (
+  1210→              <>
+  1211→                <Group label="AutoSum">
+  1212→                  <div className="relative">
+  1213→                    <RibbonBtn title="AutoSum — sums the numbers directly above" onClick={() => autoSum("SUM")}><Sigma className="h-4 w-4" /><span className="ml-1 text-[10.5px]">AutoSum</span><ChevronDown className="ml-0.5 h-3 w-3" /></RibbonBtn>
+  1214→                    {autosumMenu && (
+  1215→                      <Menu>
+  1216→                        <MenuItem onClick={() => autoSum("SUM")}>Σ Sum</MenuItem>
+  1217→                        <MenuItem onClick={() => autoSum("AVERAGE")}>x̄ Average</MenuItem>
+  1218→                        <MenuItem onClick={() => autoSum("COUNT")}>Count Numbers</MenuItem>
+  1219→                        <MenuItem onClick={() => autoSum("MAX")}>Max</MenuItem>
+  1220→                        <MenuItem onClick={() => autoSum("MIN")}>Min</MenuItem>
+  1221→                      </Menu>
+  1222→                    )}
+  1223→                  </div>
+  1224→                </Group>
+  1225→                <Group label="Function library — click, then edit the cell">
+  1226→                  <div className="flex max-w-[880px] flex-wrap gap-1">
+  1227→                    {FORMULA_BUTTONS.map((f) => (
+  1228→                      <TooltipProvider key={f.label} delayDuration={150}>
+  1229→                        <Tooltip>
+  1230→                          <TooltipTrigger asChild>
+  1231→                            <button
+  1232→                              className="rounded-md border border-border px-1.5 py-1 font-mono text-[10.5px] text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+  1233→                              onClick={() => setEditVal(f.tpl)}
+  1234→                            >
+  1235→                              {f.label}
+  1236→                            </button>
+  1237→                          </TooltipTrigger>
+  1238→                          <TooltipContent side="bottom" className="text-xs">{f.hint}</TooltipContent>
+  1239→                        </Tooltip>
+  1240→                      </TooltipProvider>
+  1241→                    ))}
+  1242→                  </div>
+  1243→                </Group>
+  1244→              </>
+  1245→            )}
+  1246→
+  1247→            {ribbonTab === "data" && (
+  1248→              <>
+  1249→                <Group label="Get & Transform Data">
+  1250→                  <RibbonBtn title="Import a CSV file" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" /><span className="ml-1 text-[10.5px]">From CSV</span></RibbonBtn>
+  1251→                  <RibbonBtn title="Export the sheet as CSV" onClick={exportCSV}><Download className="h-4 w-4" /><span className="ml-1 text-[10.5px]">To CSV</span></RibbonBtn>
+  1252→                  <div className="flex max-w-[420px] flex-wrap items-center gap-1">
+  1253→                    {["messy_sales", "bank_transactions", "deliveries", "server_logs", "finance_gl", "inventory"].map((id) => (
+  1254→                      <button key={id} className="rounded-md border border-border px-1.5 py-1 text-[10.5px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => downloadDatasetCSV(id)}>
+  1255→                        ↓ {getDatasetById(id)?.name.split(" (")[0] ?? id}
+  1256→                      </button>
+  1257→                    ))}
+  1258→                  </div>
+  1259→                </Group>
+  1260→                <Group label="Sort & Filter">
+  1261→                  <RibbonBtn title="Sort A→Z" onClick={() => sortRows(selectedColIdx, 1)}><ArrowUpNarrowWide className="h-4 w-4" /><span className="ml-1 text-[10.5px]">A→Z</span></RibbonBtn>
+  1262→                  <RibbonBtn title="Sort Z→A" onClick={() => sortRows(selectedColIdx, -1)}><ArrowDownWideNarrow className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Z→A</span></RibbonBtn>
+  1263→                  <RibbonBtn
+  1264→                    title="AutoFilter — show filter dropdowns on the header row"
+  1265→                    active={autoFilterOn}
+  1266→                    onClick={() => { setAfOn(!afOn); if (afOn) { setHidden({}); setFilterCol(null); } }}
+  1267→                  ><Filter className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Filter</span></RibbonBtn>
+  1268→                </Group>
+  1269→                <Group label="Data Tools">
+  1270→                  <RibbonBtn title="Remove duplicate rows" onClick={dedupeRows}><Wand2 className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Remove dupes</span></RibbonBtn>
+  1271→                  <span className="flex items-center gap-1 px-1 text-[10.5px] text-muted-foreground">Text col {colName(selectedColIdx)}:</span>
+  1272→                  {(["trim", "upper", "lower", "title"] as const).map((m) => (
+  1273→                    <RibbonBtn key={m} title={`Make column ${colName(selectedColIdx)} ${m}`} onClick={() => transformCol(m)}><Wand2 className="h-3.5 w-3.5" /><span className="ml-0.5 text-[10.5px]">{m}</span></RibbonBtn>
+  1274→                  ))}
+  1275→                </Group>
+  1276→                <Group label="Save">
+  1277→                  <RibbonBtn title="Save this sheet to your Academy portfolio" onClick={() => saveSheet(sheet.name || "Sheet1", cells)}><Save className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Save to portfolio</span></RibbonBtn>
+  1278→                </Group>
+  1279→              </>
+  1280→            )}
+  1281→
+  1282→            {ribbonTab === "review" && (
+  1283→              <Group label="Checking">
+  1284→                <RibbonBtn title="Check the sheet for formula errors" onClick={() => {
+  1285→                  const errs = Object.keys(cells).filter((ref) => displayValue(ref, cells, styles).startsWith("#"));
+  1286→                  setLoadedInfo(errs.length ? `Error check: ${errs.length} error cell${errs.length === 1 ? "" : "s"} — ${errs.slice(0, 6).join(", ")}${errs.length > 6 ? "…" : ""}` : "Error check passed — no formula errors in this sheet. ✔");
+  1287→                }}><SpellCheck2 className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Check for errors</span></RibbonBtn>
+  1288→                <div className="self-center px-2 text-[11px] leading-relaxed text-muted-foreground">
+  1289→                  {usedR - 1} data rows · {usedC} columns · <b className="text-foreground">{formulaCount}</b> formulas · {Object.keys(styles).length} formatted cells
+  1290→                </div>
+  1291→              </Group>
+  1292→            )}
+  1293→
+  1294→            {ribbonTab === "view" && (
+  1295→              <>
+  1296→                <Group label="Freeze Panes">
+  1297→                  <div className="relative">
+  1298→                    <RibbonBtn title="Freeze rows/columns so headers stay visible" active={sheet.freeze !== "none"} onClick={() => setFreezeMenu((v) => !v)}><Snowflake className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Freeze</span><ChevronDown className="ml-0.5 h-3 w-3" /></RibbonBtn>
+  1299→                    {freezeMenu && (
+  1300→                      <Menu>
+  1301→                        <MenuItem onClick={() => setFreeze("none")} check={sheet.freeze === "none"}>No freezing</MenuItem>
+  1302→                        <MenuItem onClick={() => setFreeze("top")} check={sheet.freeze === "top"}>Freeze top row</MenuItem>
+  1303→                        <MenuItem onClick={() => setFreeze("first")} check={sheet.freeze === "first"}>Freeze first column</MenuItem>
+  1304→                        <MenuItem onClick={() => setFreeze("both")} check={sheet.freeze === "both"}>Freeze both</MenuItem>
+  1305→                      </Menu>
+  1306→                    )}
+  1307→                  </div>
+  1308→                </Group>
+  1309→                <Group label="Show">
+  1310→                  <RibbonBtn title="Show or hide gridlines" active={gridlines} onClick={() => setGridlines((g) => !g)}><Grid2x2 className="h-4 w-4" /><span className="ml-1 text-[10.5px]">Gridlines</span></RibbonBtn>
+  1311→                </Group>
+  1312→                <Group label="Zoom">
+  1313→                  <RibbonBtn title="Zoom out" onClick={() => setZoom((z) => Math.max(50, z - 10))}><ZoomOut className="h-4 w-4" /></RibbonBtn>
+  1314→                  <span className="flex w-12 items-center justify-center text-[11px] font-semibold">{zoom}%</span>
+  1315→                  <RibbonBtn title="Zoom in" onClick={() => setZoom((z) => Math.min(160, z + 10))}><ZoomIn className="h-4 w-4" /></RibbonBtn>
+  1316→                  <RibbonBtn title="Reset to 100%" onClick={() => setZoom(100)}>100%</RibbonBtn>
+  1317→                </Group>
+  1318→              </>
+  1319→            )}
+  1320→          </div>
+  1321→        )}
+  1322→      </div>
+  1323→
+  1324→      {/* ============ grid + charts ============ */}
+  1325→      <div className="flex flex-col gap-4 lg:flex-row">
+  1326→        <div className="flex min-w-0 flex-1 flex-col">
+  1327→          <div
+  1328→            ref={gridRef}
+  1329→            tabIndex={0}
+  1330→            onKeyDown={onKey}
+  1331→            onMouseMove={onGridMouseMove}
+  1332→            onMouseUp={onGridMouseUp}
+  1333→            onMouseLeave={onGridMouseUp}
+  1334→            className={`${PANEL} relative overflow-auto outline-none scrollbar-thin`} style={{ maxHeight: "56vh" }}
+  1335→          >
+  1336→            <table
+  1337→              className="border-collapse text-[13px]"
+  1338→              style={{ minWidth: viewCols * 96, borderSpacing: 0 }}
+  1339→            >
+  1340→              <thead>
+  1341→                <tr className="sticky top-0 z-20 bg-card">
+  1342→                  <th
+  1343→                    onMouseDown={(e) => { e.preventDefault(); selectAll(); }}
+  1344→                    className="sticky left-0 z-30 w-10 cursor-pointer border-b border-r border-border bg-card px-1 py-1.5 text-[10px] font-medium text-muted-foreground hover:bg-muted"
+  1345→                    title="Select all"
+  1346→                    style={{ left: 0 }}
+  1347→                  >
+  1348→                    <span className="mx-auto block h-2 w-2 border border-muted-foreground/50" />
+  1349→                  </th>
+  1350→                  {Array.from({ length: viewCols }, (_, c) => {
+  1351→                    const colSelected = c >= nSel.c1 && c <= nSel.c2;
+  1352→                    const w = sheet.colW[c] ?? 96;
+  1353→                    return (
+  1354→                      <th
+  1355→                        key={c}
+  1356→                        onMouseDown={(e) => { e.preventDefault(); dragRef.current = { kind: "col", start: [c, 0] }; setSel({ a: [c, 0], b: [c, ROWS - 1] }); gridRef.current?.focus(); }}
+  1357→                        className={`relative cursor-pointer select-none border-b border-r px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+  1358→                          colSelected ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" : "bg-card text-muted-foreground hover:bg-muted"
+  1359→                        }`}
+  1360→                        style={{ minWidth: w, maxWidth: w }}
+  1361→                      >
+  1362→                        {colName(c)}
+  1363→                        <span
+  1364→                          onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); resizeRef.current = { col: c, startX: e.clientX, startW: w }; setResizing(w); }}
+  1365→                          className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-emerald-500/50"
+  1366→                          title="Drag to resize column"
+  1367→                        />
+  1368→                        {autoFilterOn && (
+  1369→                          <span
+  1370→                            role="button"
+  1371→                            aria-label={`Filter column ${colName(c)}`}
+  1372→                            className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+  1373→                            onMouseDown={(e) => { e.stopPropagation(); setFilterCol(filterCol === c ? null : c); }}
+  1374→                          >
+  1375→                            <ListFilter className="h-2.5 w-2.5" />
+  1376→                          </span>
+  1377→                        )}
+  1378→                      </th>
+  1379→                    );
+
+[showing lines 920-1379 of 1822; use offset=1380 with limit to continue reading]
