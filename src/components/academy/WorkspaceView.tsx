@@ -7,6 +7,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Md, PANEL, PANEL_HEAD } from "./shared";
+import { GithubPanel } from "./GithubPanel";
 import { useAcademy } from "@/lib/academy/store";
 import { GITHUB_GUIDE, PORTFOLIO_ROOT } from "@/lib/academy/portfolio";
 import { downloadFile } from "@/lib/academy/datasets";
@@ -45,7 +46,7 @@ function buildTree(paths: { path: string; kind: string; content: string }[]): Tr
 const kindIcon = (kind: string) => {
   switch (kind) {
     case "md": return <FileText className="h-3.5 w-3.5 text-muted-foreground" />;
-    case "csv": return <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />;
+    case "csv": return <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />;
     case "json": return <FileJson className="h-3.5 w-3.5 text-amber-400" />;
     case "py": return <FileCode2 className="h-3.5 w-3.5 text-sky-400" />;
     case "sql": return <Braces className="h-3.5 w-3.5 text-violet-400" />;
@@ -135,10 +136,10 @@ export function WorkspaceView() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10"><FolderGit2 className="h-5 w-5 text-emerald-400" /></div>
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10"><FolderGit2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400" /></div>
           <div>
-            <h1 className="text-lg font-bold tracking-tight text-white sm:text-xl">My Portfolio Workspace</h1>
-            <p className="text-[13px] text-muted-foreground">Your projects live here as a real folder — download as ZIP, upload to GitHub, share with recruiters.</p>
+            <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">My Portfolio Workspace</h1>
+            <p className="text-[13px] text-muted-foreground">Your projects live here as a real folder — download as ZIP, push to GitHub, share with recruiters.</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -215,16 +216,19 @@ export function WorkspaceView() {
         </div>
       )}
 
-      {/* GitHub guide */}
+      {/* GitHub sync — real push & pull */}
+      <GithubPanel />
+
+      {/* GitHub guide (manual path) */}
       <div className={PANEL}>
         <div className={PANEL_HEAD}>
-          <span className="flex items-center gap-2 text-sm font-semibold text-white"><Github className="h-4 w-4 text-emerald-400" /> Publish to GitHub — 10 minutes, zero cost</span>
+          <span className="flex items-center gap-2 text-sm font-semibold text-foreground"><Github className="h-4 w-4 text-emerald-500" /> Prefer the terminal? — classic git publish, 10 minutes, zero cost</span>
         </div>
         <div className="grid gap-4 p-5 lg:grid-cols-2">
           <ol className="space-y-3">
             {GITHUB_GUIDE.steps.map((s, i) => (
               <li key={i} className="flex gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-[11px] font-bold text-emerald-300">{i + 1}</span>
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-[11px] font-bold text-emerald-600 dark:text-emerald-300">{i + 1}</span>
                 <div>
                   <p className="text-[13.5px] font-semibold text-foreground/90">{s.title}</p>
                   <p className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">{s.detail}</p>
@@ -258,7 +262,7 @@ function CsvPreview({ content }: { content: string }) {
     <div className="overflow-auto">
       <table className="w-full text-left text-[12px]">
         <thead className="sticky top-0 bg-card">
-          <tr>{parsed[0].map((h, i) => <th key={i} className="whitespace-nowrap border-b border-border px-3 py-2 font-mono text-[11px] text-emerald-300">{h}</th>)}</tr>
+          <tr>{parsed[0].map((h, i) => <th key={i} className="whitespace-nowrap border-b border-border px-3 py-2 font-mono text-[11px] text-emerald-600 dark:text-emerald-300">{h}</th>)}</tr>
         </thead>
         <tbody>
           {parsed.slice(1).map((row, ri) => (

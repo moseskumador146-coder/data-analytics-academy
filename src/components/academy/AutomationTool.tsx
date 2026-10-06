@@ -345,7 +345,7 @@ export function AutomationTool() {
               {logs.length === 0 && <p className="py-8 text-center text-muted-foreground/60">Press ▶ Run pipeline — steps execute with live row counts and quality gates.</p>}
               {logs.map((l, i) => (
                 <div key={i} className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${l.status === "fail" ? "bg-red-500/10 text-red-600 dark:text-red-300" : "bg-muted/40 text-foreground/80"}`}>
-                  {l.status === "ok" ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />}
+                  {l.status === "ok" ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />}
                   <span className="text-violet-300/80">{l.step}</span>
                   <span className="min-w-0 flex-1">{l.detail}</span>
                   <span className="shrink-0 text-muted-foreground/60">{l.ms}ms</span>
@@ -373,7 +373,7 @@ export function AutomationTool() {
                   {output.slice(0, 4).map((d) => (
                     <div key={d.label} className="rounded-lg border border-border bg-black/25 p-2.5">
                       <p className="truncate text-[11px] text-muted-foreground/80">{d.label}</p>
-                      <p className="text-sm font-bold text-white">{fmtNum(d.value)}</p>
+                      <p className="text-sm font-bold text-foreground">{fmtNum(d.value)}</p>
                     </div>
                   ))}
                 </div>

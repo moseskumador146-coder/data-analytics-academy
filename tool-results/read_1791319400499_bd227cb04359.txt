@@ -1,0 +1,1176 @@
+     1→"use client";
+     2→
+     3→/* Excel Studio — spreadsheet with a real formula engine, CSV import/export,
+     4→   sort/dedupe/text ops/fill-down, stats panel, saved sheets and a live Coach.
+     5→   All client-side, instant. */
+     6→
+     7→import * as React from "react";
+     8→import { Button } from "@/components/ui/button";
+     9→import { Input } from "@/components/ui/input";
+    10→import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+    11→import { ToolHeader, PANEL, PANEL_HEAD, fmtNum, DatasetPicker, downloadDatasetCSV } from "./shared";
+    12→import { Coach } from "./Coach";
+    13→import { useAcademy } from "@/lib/academy/store";
+    14→import { getDatasetById, downloadFile, type Row } from "@/lib/academy/datasets";
+    15→import Papa from "papaparse";
+    16→import {
+    17→  ArrowDownToLine, Download, Eraser, FileSpreadsheet, Plus, Save, Sigma, Trash2, Upload, Wand2,
+    18→} from "lucide-react";
+    19→
+    20→/* ================= formula engine ================= */
+    21→const COLS = 26;
+    22→const ROWS = 200;
+    23→const colName = (i: number) => String.fromCharCode(65 + i);
+    24→const refFor = (c: number, r: number) => `${colName(c)}${r + 1}`;
+    25→const parseRef = (ref: string): [number, number] | null => {
+    26→  const m = /^\$?([A-Z])\$?(\d+)$/i.exec(ref.trim());
+    27→  if (!m) return null;
+    28→  return [m[1].toUpperCase().charCodeAt(0) - 65, parseInt(m[2], 10) - 1];
+    29→};
+    30→
+    31→type Val = string | number;
+    32→type Arg = { kind: "value"; v: Val } | { kind: "range"; values: string[]; w: number; h: number };
+    33→
+    34→class FormulaError extends Error {}
+    35→
+    36→function evalSheetFormula(src: string, cells: Record<string, string>, stack: Set<string>): Val {
+    37→  let pos = 0;
+    38→  const ws = () => { while (pos < src.length && /\s/.test(src[pos])) pos++; };
+    39→
+    40→  function parseExpr(): Val { return parseCompare(); }
+    41→
+    42→  function parseCompare(): Val {
+    43→    let l = parseConcat();
+    44→    ws();
+    45→    const ops = ["<=", ">=", "<>", "=", "<", ">"];
+    46→    for (const op of ops) {
+    47→      if (src.startsWith(op, pos)) {
+    48→        pos += op.length;
+    49→        const r = parseConcat();
+    50→        const ln = typeof l === "number" ? l : parseFloat(String(l));
+    51→        const rn = typeof r === "number" ? r : parseFloat(String(r));
+    52→        const numeric = !isNaN(ln) && !isNaN(rn);
+    53→        switch (op) {
+    54→          case "=": return (numeric ? ln === rn : String(l) === String(r)) ? 1 : 0;
+    55→          case "<>": return (numeric ? ln !== rn : String(l) !== String(r)) ? 1 : 0;
+    56→          case "<": return numeric ? (ln < rn ? 1 : 0) : String(l) < String(r) ? 1 : 0;
+    57→          case ">": return numeric ? (ln > rn ? 1 : 0) : String(l) > String(r) ? 1 : 0;
+    58→          case "<=": return numeric ? (ln <= rn ? 1 : 0) : String(l) <= String(r) ? 1 : 0;
+    59→          case ">=": return numeric ? (ln >= rn ? 1 : 0) : String(l) >= String(r) ? 1 : 0;
+    60→        }
+    61→      }
+    62→    }
+    63→    return l;
+    64→  }
+    65→
+    66→  function parseConcat(): Val {
+    67→    let l = parseAdd();
+    68→    for (;;) {
+    69→      ws();
+    70→      if (src[pos] === "&") {
+    71→        pos++;
+    72→        const r = parseAdd();
+    73→        l = `${fmtRaw(l)}${fmtRaw(r)}`;
+    74→      } else return l;
+    75→    }
+    76→  }
+    77→
+    78→  function parseAdd(): Val {
+    79→    let l = parseMul();
+    80→    for (;;) {
+    81→      ws();
+    82→      if (src[pos] === "+") { pos++; l = num(l) + num(parseMul()); }
+    83→      else if (src[pos] === "-") { pos++; l = num(l) - num(parseMul()); }
+    84→      else return l;
+    85→    }
+    86→  }
+    87→  function parseMul(): Val {
+    88→    let l = parsePow();
+    89→    for (;;) {
+    90→      ws();
+    91→      if (src[pos] === "*") { pos++; l = num(l) * num(parsePow()); }
+    92→      else if (src[pos] === "/") {
+    93→        pos++;
+    94→        const d = num(parsePow());
+    95→        if (d === 0) throw new FormulaError("#DIV/0!");
+    96→        l = num(l) / d;
+    97→      } else return l;
+    98→    }
+    99→  }
+   100→  function parsePow(): Val {
+   101→    let l = parseUnary();
+   102→    for (;;) {
+   103→      ws();
+   104→      if (src[pos] === "^") { pos++; l = Math.pow(num(l), num(parseUnary())); }
+   105→      else return l;
+   106→    }
+   107→  }
+   108→  function parseUnary(): Val {
+   109→    ws();
+   110→    if (src[pos] === "-") { pos++; return -num(parseUnary()); }
+   111→    if (src[pos] === "+") { pos++; return num(parseUnary()); }
+   112→    return parsePrimary() as Val;
+   113→  }
+   114→
+   115→  function parsePrimary(): Val | Arg {
+   116→    ws();
+   117→    if (src[pos] === "(") {
+   118→      pos++;
+   119→      const v = parseExpr();
+   120→      ws();
+   121→      if (src[pos] !== ")") throw new FormulaError("#SYNTAX!");
+   122→      pos++;
+   123→      return v;
+   124→    }
+   125→    if (src[pos] === '"') {
+   126→      let s = "";
+   127→      pos++;
+   128→      while (pos < src.length && src[pos] !== '"') s += src[pos++];
+   129→      pos++;
+   130→      return s;
+   131→    }
+   132→    /* full-column refs: F:F · $F:$F  →  whole column range */
+   133→    const colRange = /^\$?([A-Za-z])\$?\s*:\s*\$?([A-Za-z])\$?(?!\d)/.exec(src.slice(pos));
+   134→    if (colRange) {
+   135→      const c1 = colRange[1].toUpperCase().charCodeAt(0) - 65;
+   136→      const c2 = colRange[2].toUpperCase().charCodeAt(0) - 65;
+   137→      pos += colRange[0].length;
+   138→      if (c1 >= COLS || c2 >= COLS) throw new FormulaError("#REF!");
+   139→      return rangeBox(refFor(Math.min(c1, c2), 0), refFor(Math.max(c1, c2), ROWS - 1), cells, stack);
+   140→    }
+   141→    /* full-row refs: 2:4 → whole-row range */
+   142→    const rowRange = /^\$?(\d+)\s*:\s*\$?(\d+)/.exec(src.slice(pos));
+   143→    if (rowRange) {
+   144→      const r1 = Math.max(0, Math.min(+rowRange[1], +rowRange[2]) - 1);
+   145→      const r2 = Math.min(ROWS - 1, Math.max(+rowRange[1], +rowRange[2]) - 1);
+   146→      pos += rowRange[0].length;
+   147→      return rangeBox(refFor(0, r1), refFor(COLS - 1, r2), cells, stack);
+   148→    }
+   149→    const numMatch = /^\d+(\.\d+)?/.exec(src.slice(pos));
+   150→    if (numMatch) { pos += numMatch[0].length; return parseFloat(numMatch[0]); }
+   151→    const fnMatch = /^([A-Z][A-Z0-9.]*)\(/i.exec(src.slice(pos));
+   152→    if (fnMatch) {
+   153→      const name = fnMatch[1].toUpperCase();
+   154→      pos += fnMatch[0].length;
+   155→      if (name === "IFERROR" || name === "IFNA") return parseIfError(name);
+   156→      const args: Arg[] = [];
+   157→      if (src[pos] === ")") pos++;
+   158→      else {
+   159→        for (;;) {
+   160→          args.push(parseArg());
+   161→          if (src[pos] === ",") { pos++; continue; }
+   162→          if (src[pos] === ")") { pos++; break; }
+   163→          throw new FormulaError("#SYNTAX!");
+   164→        }
+   165→      }
+   166→      return callFn(name, args);
+   167→    }
+   168→    const refMatch = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
+   169→    if (refMatch) {
+   170→      const ref = refMatch[0].toUpperCase();
+   171→      pos += refMatch[0].length;
+   172→      ws();
+   173→      if (src[pos] === ":") {
+   174→        pos++;
+   175→        const ref2Match = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
+   176→        if (!ref2Match) throw new FormulaError("#SYNTAX!");
+   177→        pos += ref2Match[0].length;
+   178→        return rangeBox(ref, ref2Match[0].toUpperCase(), cells, stack);
+   179→      }
+   180→      return { kind: "value", v: cellValue(ref, cells, stack) };
+   181→    }
+   182→    if (/^TRUE$/i.test(src.slice(pos, pos + 4))) { pos += 4; return 1; }
+   183→    if (/^FALSE$/i.test(src.slice(pos, pos + 5))) { pos += 5; return 0; }
+   184→    throw new FormulaError("#NAME?");
+   185→  }
+   186→
+   187→  function parseArg(): Arg {
+   188→    ws();
+   189→    /* full-column / full-row refs */
+   190→    const colRange = /^\$?([A-Za-z])\$?\s*:\s*\$?([A-Za-z])\$?(?!\d)/.exec(src.slice(pos));
+   191→    if (colRange) {
+   192→      const c1 = colRange[1].toUpperCase().charCodeAt(0) - 65;
+   193→      const c2 = colRange[2].toUpperCase().charCodeAt(0) - 65;
+   194→      pos += colRange[0].length;
+   195→      if (c1 >= COLS || c2 >= COLS) throw new FormulaError("#REF!");
+   196→      return rangeBox(refFor(Math.min(c1, c2), 0), refFor(Math.max(c1, c2), ROWS - 1), cells, stack);
+   197→    }
+   198→    const rowRange = /^\$?(\d+)\s*:\s*\$?(\d+)/.exec(src.slice(pos));
+   199→    if (rowRange) {
+   200→      const r1 = Math.max(0, Math.min(+rowRange[1], +rowRange[2]) - 1);
+   201→      const r2 = Math.min(ROWS - 1, Math.max(+rowRange[1], +rowRange[2]) - 1);
+   202→      pos += rowRange[0].length;
+   203→      return rangeBox(refFor(0, r1), refFor(COLS - 1, r2), cells, stack);
+   204→    }
+   205→    const startRef = /^\$?[A-Za-z]\$?\d+/.exec(src.slice(pos));
+   206→    if (startRef) {
+   207→      const ref = startRef[0].toUpperCase();
+   208→      const after = src.slice(pos + startRef[0].length);
+   209→      if (/^\s*:/.test(after)) {
+   210→        const m2 = /^\s*:\s*\$?[A-Za-z]\$?\d+/.exec(after);
+   211→        if (m2) {
+   212→          const ref2 = /^\s*:\s*(\$?[A-Za-z]\$?\d+)/.exec(after)![1].toUpperCase();
+   213→          pos += startRef[0].length + /^\s*:\s*\$?[A-Za-z]\$?\d+/.exec(after)![0].length;
+   214→          return rangeBox(ref, ref2, cells, stack);
+   215→        }
+   216→      }
+   217→    }
+   218→    const v = parseExpr();
+   219→    return { kind: "value", v };
+   220→  }
+   221→
+   222→  /* IFERROR / IFNA need lazy evaluation: the fallback must only be parsed when
+   223→     the main argument actually throws. Implemented at the parser level. */
+   224→  function argValue(a: Arg): Val {
+   225→    return a.kind === "value" ? a.v : a.values[0] ?? "";
+   226→  }
+   227→  function skipToCommaOrClose(): void {
+   228→    let depth = 0;
+   229→    while (pos < src.length) {
+   230→      const ch = src[pos];
+   231→      if (ch === "(") depth++;
+   232→      else if (ch === ")") { if (depth === 0) return; depth--; }
+   233→      else if (ch === "," && depth === 0) return;
+   234→      pos++;
+   235→    }
+   236→  }
+   237→  function parseIfError(name: "IFERROR" | "IFNA"): Val {
+   238→    ws();
+   239→    const start = pos;
+   240→    let main: Arg | null = null;
+   241→    let failed: unknown = null;
+   242→    try {
+   243→      main = parseArg();
+   244→    } catch (e) {
+   245→      failed = e;
+   246→      pos = start;
+   247→      skipToCommaOrClose();
+   248→    }
+   249→    const isNa = failed instanceof FormulaError && failed.message === "#N/A";
+   250→    if (failed && name === "IFNA" && !isNa) throw failed;
+   251→    if (main) {
+   252→      ws();
+   253→      if (src[pos] === ",") {
+   254→        pos++;
+   255→        try { parseArg(); } catch { /* fallback errored — main value still wins */ skipToCommaOrClose(); }
+   256→      }
+   257→      ws();
+   258→      if (src[pos] === ")") pos++;
+   259→      return argValue(main);
+   260→    }
+   261→    ws();
+   262→    if (src[pos] !== ",") throw failed; // no fallback → surface the error
+   263→    pos++;
+   264→    const fb = parseArg();
+   265→    ws();
+   266→    if (src[pos] === ")") pos++;
+   267→    return argValue(fb);
+   268→  }
+   269→
+   270→  const v = parseExpr();
+   271→  ws();
+   272→  if (pos < src.length) throw new FormulaError("#SYNTAX!");
+   273→  if (typeof v === "object" && v !== null && "kind" in v) throw new FormulaError("#VALUE!");
+   274→  return v as Val;
+   275→}
+   276→
+   277→function fmtRaw(v: Val): string {
+   278→  return typeof v === "number" ? fmtNum(v) : String(v);
+   279→}
+   280→function num(v: Val): number {
+   281→  if (typeof v === "number") return v;
+   282→  const n = parseFloat(String(v ?? "").replace(/[$,%\s]/g, ""));
+   283→  if (isNaN(n)) throw new FormulaError("#VALUE!");
+   284→  return n;
+   285→}
+   286→function cellValue(ref: string, cells: Record<string, string>, stack: Set<string>): Val {
+   287→  if (stack.has(ref)) throw new FormulaError("#CYCLE!");
+   288→  const raw = cells[ref] ?? "";
+   289→  if (raw === "") return "";
+   290→  if (raw.startsWith("=")) {
+   291→    stack.add(ref);
+   292→    try {
+   293→      return evalSheetFormula(raw.slice(1), cells, stack);
+   294→    } finally {
+   295→      stack.delete(ref);
+   296→    }
+   297→  }
+   298→  const n = parseFloat(raw);
+   299→  return isNaN(n) || !/^-?[\d.,$%eE+-]+$/.test(raw) || /[\d]([.,]\d+)*[.,]\D/.test(raw) ? raw : n;
+   300→}
+   301→function rangeBox(a: string, b: string, cells: Record<string, string>, stack: Set<string>): Arg {
+   302→  const [c1, r1] = parseRef(a)!;
+   303→  const [c2, r2] = parseRef(b)!;
+   304→  const [cMin, cMax] = [Math.min(c1, c2), Math.max(c1, c2)];
+   305→  const [rMin, rMax] = [Math.min(r1, r2), Math.max(r1, r2)];
+   306→  const values: string[] = [];
+   307→  for (let r = rMin; r <= rMax; r++)
+   308→    for (let c = cMin; c <= cMax; c++)
+   309→      values.push(String(cellValue(refFor(c, r), cells, stack) ?? ""));
+   310→  return { kind: "range", values, w: cMax - cMin + 1, h: rMax - rMin + 1 };
+   311→}
+   312→
+   313→function callFn(name: string, args: Arg[]): Val {
+   314→  const flat = (): string[] => {
+   315→    const out: string[] = [];
+   316→    for (const a of args) {
+   317→      if (a.kind === "range") out.push(...a.values);
+   318→      else out.push(String(a.v));
+   319→    }
+   320→    return out;
+   321→  };
+   322→  const numeric = (vals: string[]): number[] =>
+   323→    vals.map((v) => parseFloat(String(v ?? "").replace(/[$,\s]/g, ""))).filter((n) => !isNaN(n));
+   324→  const nonEmpty = (): string[] => flat().filter((v) => v !== "" && v !== "#CYCLE!");
+   325→  const scalar = (i: number): Val => (args[i]?.kind === "value" ? (args[i] as { v: Val }).v : num(args[i]?.values[0] ?? "0"));
+   326→  const text = (i: number): string => String(scalar(i) ?? "");
+   327→
+   328→  switch (name) {
+   329→    case "SUM": return numeric(flat()).reduce((s, n) => s + n, 0);
+   330→    case "AVERAGE": {
+   331→      const n = numeric(flat());
+   332→      return n.length ? n.reduce((s, x) => s + x, 0) / n.length : 0;
+   333→    }
+   334→    case "MEDIAN": {
+   335→      const n = numeric(flat()).sort((a, b) => a - b);
+   336→      if (!n.length) return 0;
+   337→      const mid = Math.floor(n.length / 2);
+   338→      return n.length % 2 ? n[mid] : (n[mid - 1] + n[mid]) / 2;
+   339→    }
+   340→    case "STDEV": {
+   341→      const n = numeric(flat());
+   342→      if (n.length < 2) return 0;
+   343→      const mean = n.reduce((s, x) => s + x, 0) / n.length;
+   344→      return Math.sqrt(n.reduce((s, x) => s + (x - mean) ** 2, 0) / (n.length - 1));
+   345→    }
+   346→    case "VAR": {
+   347→      const n = numeric(flat());
+   348→      if (n.length < 2) return 0;
+   349→      const mean = n.reduce((s, x) => s + x, 0) / n.length;
+   350→      return n.reduce((s, x) => s + (x - mean) ** 2, 0) / (n.length - 1);
+   351→    }
+   352→    case "COUNT": return numeric(flat()).length;
+   353→    case "COUNTA": return nonEmpty().length;
+   354→    case "COUNTBLANK": {
+   355→      const a = args[0];
+   356→      if (!a) return 0;
+   357→      const vals = a.kind === "range" ? a.values : [String(a.v)];
+   358→      return vals.filter((v) => v === "").length;
+   359→    }
+   360→    case "MIN": { const n = numeric(flat()); return n.length ? Math.min(...n) : 0; }
+   361→    case "MAX": { const n = numeric(flat()); return n.length ? Math.max(...n) : 0; }
+   362→    case "ROUND": {
+   363→      const d = args.length > 1 ? num(scalar(1)) : 0;
+   364→      return +num(scalar(0)).toFixed(d);
+   365→    }
+   366→    case "INT": return Math.floor(num(scalar(0)));
+   367→    case "MOD": return num(scalar(0)) % num(scalar(1));
+   368→    case "SQRT": return Math.sqrt(Math.abs(num(scalar(0))));
+   369→    case "POWER": return Math.pow(num(scalar(0)), num(scalar(1)));
+   370→    case "ABS": return Math.abs(num(scalar(0)));
+   371→    case "CONCAT":
+   372→    case "CONCATENATE": {
+   373→      let s = "";
+   374→      for (const a of args) {
+   375→        if (a.kind === "range") s += a.values.filter((v) => v !== "").join("");
+   376→        else s += fmtRaw(a.v);
+   377→      }
+   378→      return s;
+   379→    }
+   380→    case "VLOOKUP": {
+   381→      const lookup = scalar(0);
+   382→      const rng = args[1];
+   383→      if (!rng || rng.kind !== "range") throw new FormulaError("#VALUE!");
+   384→      const colIdx = Math.round(num(scalar(2)));
+   385→      if (colIdx < 1 || colIdx > rng.w) throw new FormulaError("#REF!");
+   386→      const lk = typeof lookup === "number" ? lookup : String(lookup).trim().toLowerCase();
+   387→      for (let r = 0; r < rng.h; r++) {
+   388→        const key = rng.values[r * rng.w];
+   389→        const keyN = typeof lookup === "number" ? parseFloat(String(key).replace(/[$,\s]/g, "")) : NaN;
+   390→        const match = typeof lookup === "number"
+   391→          ? !isNaN(keyN) && keyN === lookup
+   392→          : String(key).trim().toLowerCase() === lk;
+   393→        if (match) {
+   394→          const out = rng.values[r * rng.w + (colIdx - 1)];
+   395→          const outN = parseFloat(String(out).replace(/[$,\s]/g, ""));
+   396→          return isNaN(outN) || out === "" ? out : outN;
+   397→        }
+   398→      }
+   399→      throw new FormulaError("#N/A");
+   400→    }
+   401→    case "IF": {
+   402→      const cond = scalar(0);
+   403→      const yes = args[1]?.kind === "value" ? args[1].v : args[1]?.values[0] ?? "";
+   404→      const no = args[2]?.kind === "value" ? args[2].v : args[2]?.values[0] ?? "";
+   405→      const truthy = typeof cond === "number" ? cond !== 0 : String(cond).toUpperCase() === "TRUE" || (String(cond) !== "" && String(cond) !== "FALSE");
+   406→      return truthy ? yes : no;
+   407→    }
+   408→    case "AND": return args.every((a) => (a.kind === "value" ? typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() !== "FALSE" && a.v !== "" : a.values.some((x) => x !== ""))) ? 1 : 0;
+   409→    case "OR": return args.some((a) => (a.kind === "value" ? typeof a.v === "number" ? a.v !== 0 : String(a.v).toUpperCase() === "TRUE" : a.values.some((x) => x !== ""))) ? 1 : 0;
+   410→    case "NOT": return num(scalar(0)) === 0 ? 1 : 0;
+   411→    case "UPPER": return text(0).toUpperCase();
+   412→    case "LOWER": return text(0).toLowerCase();
+   413→    case "PROPER": return text(0).toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
+   414→    case "TRIM": return text(0).trim();
+   415→    case "LEN": return text(0).length;
+   416→    case "LEFT": return text(0).slice(0, args.length > 1 ? Math.round(num(scalar(1))) : 1);
+   417→    case "RIGHT": { const n = args.length > 1 ? Math.round(num(scalar(1))) : 1; return text(0).slice(-n || undefined); }
+   418→    case "MID": return text(0).slice(Math.round(num(scalar(1))) - 1, Math.round(num(scalar(1))) - 1 + Math.round(num(scalar(2))));
+   419→    case "VALUE": return num(scalar(0));
+   420→    case "TEXTJOIN": {
+   421→      const sep = text(0);
+   422→      const parts: string[] = [];
+   423→      for (const a of args.slice(2)) {
+   424→        if (a.kind === "range") parts.push(...a.values.filter((v) => v !== ""));
+   425→        else if (String(a.v) !== "") parts.push(String(a.v));
+   426→      }
+   427→      return parts.join(sep);
+   428→    }
+   429→    case "SUMIF":
+   430→    case "AVERAGEIF":
+   431→    case "COUNTIF": {
+   432→      const rangeArg = args[0];
+   433→      const critArg = args[1];
+   434→      const crit = critArg.kind === "value" ? critArg.v : critArg.values[0] ?? "";
+   435→      const sumRange = name === "SUMIF" && args[2] ? args[2] : null;
+   436→      const test = (v: string): boolean => {
+   437→        const cs = String(crit);
+   438→        const m = /^(>=|<=|>|<|=|<>)(.*)$/.exec(cs);
+   439→        if (m) {
+   440→          const target = parseFloat(m[2].replace(/[$,\s]/g, ""));
+   441→          const value = parseFloat(String(v).replace(/[$,\s]/g, ""));
+   442→          if (!isNaN(target) && !isNaN(value)) {
+   443→            switch (m[1]) {
+   444→              case ">": return value > target;
+   445→              case "<": return value < target;
+   446→              case ">=": return value >= target;
+   447→              case "<=": return value <= target;
+   448→              case "=": return value === target;
+   449→              case "<>": return value !== target;
+   450→            }
+   451→          }
+   452→          return m[1] === "=" ? String(v) === m[2] : false;
+   453→        }
+   454→        return String(v).trim().toLowerCase() === cs.trim().toLowerCase();
+   455→      };
+   456→      if (name === "COUNTIF") {
+   457→        const vals = rangeArg.kind === "range" ? rangeArg.values : [String(rangeArg.v)];
+   458→        let c = 0;
+   459→        for (const v of vals) if (v !== "" && test(v)) c++;
+   460→        return c;
+   461→      }
+   462→      const vals = rangeArg.kind === "range" ? rangeArg.values : [String(rangeArg.v)];
+   463→      const sums = sumRange ? (sumRange.kind === "range" ? sumRange.values : [String(sumRange.v)]) : vals;
+   464→      let s = 0;
+   465→      let matched = 0;
+   466→      vals.forEach((v, i) => {
+   467→        if (v !== "" && test(v)) {
+   468→          const n = parseFloat(String(sums[i] ?? "").replace(/[$,\s]/g, ""));
+   469→          if (!isNaN(n)) { s += n; matched++; }
+   470→        }
+   471→      });
+   472→      return name === "AVERAGEIF" ? (matched ? s / matched : 0) : s;
+   473→    }
+   474→    case "SUMIFS":
+   475→    case "COUNTIFS": {
+   476→      // SUMIFS(sum_range, crit_range1, crit1, ...) · COUNTIFS(crit_range1, crit1, ...)
+   477→      const pairs: { vals: string[]; crit: string }[] = [];
+   478→      let sumVals: string[] = [];
+   479→      if (name === "SUMIFS") {
+   480→        const sr = args[0];
+   481→        sumVals = sr ? (sr.kind === "range" ? sr.values : [String(sr.v)]) : [];
+   482→        for (let i = 1; i + 1 < args.length; i += 2) {
+   483→          const r = args[i];
+   484→          const c = args[i + 1];
+   485→          pairs.push({ vals: r ? (r.kind === "range" ? r.values : [String(r.v)]) : [], crit: c ? (c.kind === "value" ? String(c.v) : String(c.values[0] ?? "")) : "" });
+   486→        }
+   487→      } else {
+   488→        for (let i = 0; i + 1 < args.length; i += 2) {
+   489→          const r = args[i];
+   490→          const c = args[i + 1];
+   491→          pairs.push({ vals: r ? (r.kind === "range" ? r.values : [String(r.v)]) : [], crit: c ? (c.kind === "value" ? String(c.v) : String(c.values[0] ?? "")) : "" });
+   492→        }
+   493→      }
+   494→      const makeTest = (crit: string) => (v: string): boolean => {
+   495→        const m = /^(>=|<=|>|<|=|<>)(.*)$/.exec(crit);
+   496→        if (m) {
+   497→          const target = parseFloat(m[2].replace(/[$,\s]/g, ""));
+   498→          const value = parseFloat(String(v).replace(/[$,\s]/g, ""));
+   499→          if (!isNaN(target) && !isNaN(value)) {
+   500→            switch (m[1]) {
+   501→              case ">": return value > target;
+   502→              case "<": return value < target;
+   503→              case ">=": return value >= target;
+   504→              case "<=": return value <= target;
+   505→              case "=": return value === target;
+   506→              case "<>": return value !== target;
+   507→            }
+   508→          }
+   509→          return m[1] === "=" ? String(v) === m[2] : false;
+   510→        }
+   511→        return String(v).trim().toLowerCase() === crit.trim().toLowerCase();
+   512→      };
+   513→      const n = sumVals.length || pairs[0]?.vals.length || 0;
+   514→      let out = 0;
+   515→      for (let i = 0; i < n; i++) {
+   516→        if (pairs.every((p) => { const v = p.vals[i] ?? ""; return v !== "" && makeTest(p.crit)(v); })) {
+   517→          if (name === "COUNTIFS") out++;
+   518→          else {
+   519→            const x = parseFloat(String(sumVals[i] ?? "").replace(/[$,\s]/g, ""));
+   520→            if (!isNaN(x)) out += x;
+   521→          }
+   522→        }
+   523→      }
+   524→      return out;
+   525→    }
+   526→    case "XLOOKUP": {
+   527→      // XLOOKUP(lookup, lookup_range, return_range, [if_not_found])
+   528→      const lookup = scalar(0);
+   529→      const lr = args[1];
+   530→      const rr = args[2];
+   531→      if (!lr || lr.kind !== "range" || !rr || rr.kind !== "range") throw new FormulaError("#VALUE!");
+   532→      const lk = typeof lookup === "number" ? lookup : String(lookup).trim().toLowerCase();
+   533→      for (let i = 0; i < lr.values.length; i++) {
+   534→        const key = lr.values[i];
+   535→        const keyN = typeof lookup === "number" ? parseFloat(String(key).replace(/[$,\s]/g, "")) : NaN;
+   536→        const match = typeof lookup === "number"
+   537→          ? !isNaN(keyN) && keyN === lookup
+   538→          : String(key).trim().toLowerCase() === lk;
+   539→        if (match) {
+   540→          const out = rr.values[i] ?? "";
+   541→          const outN = parseFloat(String(out).replace(/[$,\s]/g, ""));
+   542→          return isNaN(outN) || out === "" ? out : outN;
+   543→        }
+   544→      }
+   545→      if (args.length > 3) return scalar(3);
+   546→      throw new FormulaError("#N/A");
+   547→    }
+   548→    case "INDEX": {
+   549→      const rng = args[0];
+   550→      if (!rng || rng.kind !== "range") throw new FormulaError("#VALUE!");
+   551→      const row = Math.round(num(scalar(1)));
+   552→      const col = args.length > 2 ? Math.round(num(scalar(2))) : 1;
+   553→      if (row < 1 || row > rng.h || col < 1 || col > rng.w) throw new FormulaError("#REF!");
+   554→      const out = rng.values[(row - 1) * rng.w + (col - 1)] ?? "";
+   555→      const outN = parseFloat(String(out).replace(/[$,\s]/g, ""));
+   556→      return isNaN(outN) || out === "" ? out : outN;
+   557→    }
+   558→    case "MATCH": {
+   559→      const lookup = scalar(0);
+   560→      const rng = args[1];
+   561→      if (!rng || rng.kind !== "range") throw new FormulaError("#VALUE!");
+   562→      const type = args.length > 2 ? num(scalar(2)) : 1;
+   563→      const vals = rng.values;
+   564→      const lk = typeof lookup === "number" ? lookup : String(lookup).trim().toLowerCase();
+   565→      if (type === 0) {
+   566→        for (let i = 0; i < vals.length; i++) {
+   567→          const key = vals[i];
+   568→          const keyN = typeof lookup === "number" ? parseFloat(String(key).replace(/[$,\s]/g, "")) : NaN;
+   569→          const match = typeof lookup === "number" ? !isNaN(keyN) && keyN === lookup : String(key).trim().toLowerCase() === lk;
+   570→          if (match) return i + 1;
+   571→        }
+   572→        throw new FormulaError("#N/A");
+   573→      }
+   574→      if (type === 1) {
+   575→        let best = -1;
+   576→        for (let i = 0; i < vals.length; i++) {
+   577→          const v = parseFloat(String(vals[i]).replace(/[$,\s]/g, ""));
+   578→          if (!isNaN(v) && typeof lk === "number" && v <= lk) best = i; else break;
+   579→        }
+   580→        if (best < 0) throw new FormulaError("#N/A");
+   581→        return best + 1;
+   582→      }
+   583→      let best = -1;
+   584→      for (let i = 0; i < vals.length; i++) {
+   585→        const v = parseFloat(String(vals[i]).replace(/[$,\s]/g, ""));
+   586→        if (!isNaN(v) && typeof lk === "number" && v >= lk) best = i; else break;
+   587→      }
+   588→      if (best < 0) throw new FormulaError("#N/A");
+   589→      return best + 1;
+   590→    }
+   591→    case "ROUNDUP": { const d = args.length > 1 ? num(scalar(1)) : 0; const p = Math.pow(10, d); return Math.ceil(Math.abs(num(scalar(0))) * p) / p * Math.sign(num(scalar(0)) || 1); }
+   592→    case "ROUNDDOWN": { const d = args.length > 1 ? num(scalar(1)) : 0; const p = Math.pow(10, d); return (Math.floor(Math.abs(num(scalar(0))) * p) / p) * Math.sign(num(scalar(0)) || 1); }
+   593→    default: throw new FormulaError(`#${name}?`);
+   594→  }
+   595→}
+   596→
+   597→function displayValue(ref: string, cells: Record<string, string>): string {
+   598→  const raw = cells[ref];
+   599→  if (raw === undefined || raw === "") return "";
+   600→  if (!raw.startsWith("=")) return raw;
+   601→  try {
+   602→    const v = evalSheetFormula(raw.slice(1), cells, new Set([ref]));
+   603→    if (typeof v === "number") {
+   604→      if (Number.isInteger(v)) return v.toLocaleString("en-US");
+   605→      return parseFloat(v.toFixed(4)).toLocaleString("en-US", { maximumFractionDigits: 4 });
+   606→    }
+   607→    return v;
+   608→  } catch (e) {
+   609→    return e instanceof FormulaError ? e.message : "#ERROR!";
+   610→  }
+   611→}
+   612→
+   613→function usedRange(cells: Record<string, string>): { rows: number; cols: number } {
+   614→  let maxR = 0, maxC = 0;
+   615→  for (const ref of Object.keys(cells)) {
+   616→    if (!cells[ref]) continue;
+   617→    const p = parseRef(ref);
+   618→    if (p) { maxR = Math.max(maxR, p[1]); maxC = Math.max(maxC, p[0]); }
+   619→  }
+   620→  return { rows: Math.min(maxR + 1, ROWS), cols: Math.min(maxC + 1, COLS) };
+   621→}
+   622→
+   623→/* ================= component ================= */
+   624→const EXCEL_MISSION = [
+   625→  { id: "load", label: "Load a sample file", detail: "Use the **data picker** to load *Retail Sales 2025 (Clean)* — or the 8,000-row *Bank Transactions* for a big-file workout. Or import your own CSV from the Data tab." },
+   626→  { id: "formula", label: "Write your first formula", detail: "Open the **Formulas** ribbon tab and click **SUM** — it drops ~ =SUM(K2:K50) ~ into the active cell. Every formula starts with **=**." },
+   627→  { id: "stats", label: "Profile a column", detail: "Click a **column header** (like I) — the stats panel shows sum, mean, median and spread, and the **status bar** underneath tracks Count / Sum / Average live." },
+   628→  { id: "logic", label: "Use conditional logic", detail: "From the Formulas tab try ~ =SUMIF(D:D,\"North\",I:I) ~, ~ =COUNTIF(I:I,\">500\") ~ or ~ =IF(I2>1000,\"Big\",\"Small\") ~." },
+   629→  { id: "lookup", label: "Look up a value", detail: "VLOOKUP is the classic, XLOOKUP is the modern one: ~ =XLOOKUP(\"Office Chair\",F:F,I:I,\"nf\") ~ finds the product's revenue." },
+   630→  { id: "clean", label: "Clean the sheet", detail: "From the **Home** tab: sort A→Z, remove duplicate rows, fix text case with Trim / Upper / Lower / Title." },
+   631→  { id: "ship", label: "Save & export", detail: "Name the sheet and save it as a **sheet tab** (bottom of the grid), then **Export CSV** from the Data tab for your portfolio." },
+   632→];
+   633→
+   634→export function ExcelTool() {
+   635→  const { sheets, saveSheet, deleteSheet } = useAcademy();
+   636→  const [cells, setCells] = React.useState<Record<string, string>>({});
+   637→  const [active, setActive] = React.useState("A1");
+   638→  const [editVal, setEditVal] = React.useState<string | null>(null);
+   639→  const [sheetName, setSheetName] = React.useState("");
+   640→  const [selectedCol, setSelectedCol] = React.useState(0);
+   641→  const [loadedInfo, setLoadedInfo] = React.useState<string | null>(null);
+   642→  const [ribbonTab, setRibbonTab] = React.useState<"home" | "formulas" | "data">("home");
+   643→  const gridRef = React.useRef<HTMLDivElement>(null);
+   644→  const fileRef = React.useRef<HTMLInputElement>(null);
+   645→  const nameRef = React.useRef<HTMLInputElement>(null);
+   646→
+   647→  const { rows: usedR, cols: usedC } = usedRange(cells);
+   648→  const viewRows = Math.max(usedR + 8, 25);
+   649→  const viewCols = Math.max(usedC + 3, 10);
+   650→
+   651→  const commit = () => {
+   652→    if (editVal === null) return;
+   653→    setCells((c) => {
+   654→      const next = { ...c };
+   655→      if (editVal === "") delete next[active];
+   656→      else next[active] = editVal;
+   657→      return next;
+   658→    });
+   659→    setEditVal(null);
+   660→  };
+   661→
+   662→  const startEdit = (initial?: string) => {
+   663→    setEditVal(initial ?? cells[active] ?? "");
+   664→  };
+   665→
+   666→  const onKey = (e: React.KeyboardEvent) => {
+   667→    const [c, r] = parseRef(active)!;
+   668→    if (editVal !== null) {
+   669→      if (e.key === "Enter") { e.preventDefault(); commit(); setActive(refFor(c, Math.min(r + 1, ROWS - 1))); }
+   670→      if (e.key === "Escape") setEditVal(null);
+   671→      if (e.key === "Tab") { e.preventDefault(); commit(); setActive(refFor(Math.min(c + 1, COLS - 1), r)); }
+   672→      return;
+   673→    }
+   674→    if (e.key === "Enter") { e.preventDefault(); startEdit(); }
+   675→    else if (e.key === "ArrowDown") { e.preventDefault(); setActive(refFor(c, Math.min(r + 1, ROWS - 1))); }
+   676→    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(refFor(c, Math.max(r - 1, 0))); }
+   677→    else if (e.key === "ArrowRight") { e.preventDefault(); setActive(refFor(Math.min(c + 1, COLS - 1), r)); }
+   678→    else if (e.key === "ArrowLeft") { e.preventDefault(); setActive(refFor(Math.max(c - 1, 0), r)); }
+   679→    else if (e.key === "Delete" || e.key === "Backspace") {
+   680→      e.preventDefault();
+   681→      setCells((cc) => { const n = { ...cc }; delete n[active]; return n; });
+   682→    } else if (e.key === "d" && (e.ctrlKey || e.metaKey)) {
+   683→      e.preventDefault();
+   684→      fillDown();
+   685→    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+   686→      startEdit(e.key);
+   687→      e.preventDefault();
+   688→    }
+   689→  };
+   690→
+   691→  const loadDataset = (id: string) => {
+   692→    const ds = getDatasetById(id);
+   693→    if (!ds) return;
+   694→    const next: Record<string, string> = {};
+   695→    ds.columns.slice(0, COLS).forEach((col, ci) => { next[refFor(ci, 0)] = col.name; });
+   696→    ds.rows.slice(0, ROWS - 1).forEach((row: Row, ri) => {
+   697→      ds.columns.slice(0, COLS).forEach((col, ci) => {
+   698→        const v = row[col.key];
+   699→        if (v !== undefined && v !== "") next[refFor(ci, ri + 1)] = String(v);
+   700→      });
+   701→    });
+   702→    setCells(next);
+   703→    setActive("A1");
+   704→    setSelectedCol(0);
+   705→    setLoadedInfo(
+   706→      ds.rows.length > ROWS - 1
+   707→        ? `${ds.name}: showing the first ${ROWS - 1} of ${ds.rows.length.toLocaleString()} rows (grid limit). Use the Cleaner or download the CSV for the full file.`
+   708→        : `${ds.name}: ${ds.rows.length.toLocaleString()} rows loaded.`
+   709→    );
+   710→  };
+   711→
+   712→  const importCSV = (file: File) => {
+   713→    Papa.parse<Row>(file, {
+   714→      header: false,
+   715→      skipEmptyLines: true,
+   716→      complete: (res) => {
+   717→        const next: Record<string, string> = {};
+   718→        res.data.slice(0, ROWS).forEach((row, ri) => {
+   719→          (row as unknown as string[]).slice(0, COLS).forEach((v, ci) => {
+   720→            if (v !== "") next[refFor(ci, ri)] = String(v);
+   721→          });
+   722→        });
+   723→        setCells(next);
+   724→        setActive("A1");
+   725→        setLoadedInfo(`Imported ${file.name}: ${Math.min(res.data.length, ROWS)} rows.`);
+   726→      },
+   727→    });
+   728→  };
+   729→
+   730→  const exportCSV = () => {
+   731→    const { rows: R, cols: C } = usedRange(cells);
+   732→    const lines: string[] = [];
+   733→    for (let r = 0; r < R; r++) {
+   734→      const vals: string[] = [];
+   735→      for (let c = 0; c < C; c++) {
+   736→        const v = displayValue(refFor(c, r), cells);
+   737→        vals.push(/[",\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v);
+   738→      }
+   739→      lines.push(vals.join(","));
+   740→    }
+   741→    downloadFile("spreadsheet_export.csv", lines.join("\n"), "text/csv");
+   742→  };
+   743→
+   744→  const sortRows = (colIdx: number, dir: 1 | -1) => {
+   745→    const { rows: R, cols: C } = usedRange(cells);
+   746→    if (R < 2) return;
+   747→    const dataRows: string[][] = [];
+   748→    for (let r = 1; r < R; r++) {
+   749→      const row: string[] = [];
+   750→      for (let c = 0; c < C; c++) row.push(cells[refFor(c, r)] ?? "");
+   751→      dataRows.push(row);
+   752→    }
+   753→    dataRows.sort((a, b) => {
+   754→      const av = a[colIdx] ?? "", bv = b[colIdx] ?? "";
+   755→      const an = parseFloat(av.replace(/[$,\s]/g, "")), bn = parseFloat(bv.replace(/[$,\s]/g, ""));
+   756→      if (!isNaN(an) && !isNaN(bn)) return (an - bn) * dir;
+   757→      return av.localeCompare(bv) * dir;
+   758→    });
+   759→    const next: Record<string, string> = {};
+   760→    for (let c = 0; c < C; c++) {
+   761→      const h = cells[refFor(c, 0)];
+   762→      if (h) next[refFor(c, 0)] = h;
+   763→    }
+   764→    dataRows.forEach((row, ri) => {
+   765→      row.forEach((v, ci) => { if (v !== "") next[refFor(ci, ri + 1)] = v; });
+   766→    });
+   767→    setCells(next);
+   768→  };
+   769→
+   770→  const dedupeRows = () => {
+   771→    const { rows: R, cols: C } = usedRange(cells);
+   772→    const seen = new Set<string>();
+   773→    const next: Record<string, string> = {};
+   774→    for (let c = 0; c < C; c++) { const h = cells[refFor(c, 0)]; if (h) next[refFor(c, 0)] = h; }
+   775→    let kept = 0, removed = 0;
+   776→    for (let r = 1; r < R; r++) {
+   777→      const key = Array.from({ length: C }, (_, c) => displayValue(refFor(c, r), cells)).join("\u0001");
+   778→      if (key.replace(/[\u0001]+$/g, "") === "") continue;
+   779→      if (seen.has(key)) { removed++; continue; }
+   780→      seen.add(key);
+   781→      for (let c = 0; c < C; c++) { const v = cells[refFor(c, r)]; if (v) next[refFor(c, kept + 1)] = v; }
+   782→      kept++;
+   783→    }
+   784→    setCells(next);
+   785→    if (removed > 0) gridRef.current?.focus();
+   786→  };
+   787→
+   788→  const fillDown = () => {
+   789→    const [c, r] = parseRef(active)!;
+   790→    const src = cells[active] ?? "";
+   791→    if (!src || r < 1) return;
+   792→    const next = { ...cells };
+   793→    for (let rr = r + 1; rr < usedR; rr++) next[refFor(c, rr)] = src;
+   794→    setCells(next);
+   795→  };
+   796→
+   797→  const colStats = React.useMemo(() => {
+   798→    const stats: { n: number; sum: number; mean: number; median: number; std: number; min: number; max: number } | null = (() => {
+   799→      const vals: number[] = [];
+   800→      for (let r = 0; r < usedR; r++) {
+   801→        const raw = displayValue(refFor(selectedCol, r), cells);
+   802→        const v = parseFloat(raw.replace(/[$,\s]/g, ""));
+   803→        if (!isNaN(v) && raw !== "") vals.push(v);
+   804→      }
+   805→      if (vals.length < 1) return null;
+   806→      const sorted = [...vals].sort((a, b) => a - b);
+   807→      const sum = vals.reduce((s, x) => s + x, 0);
+   808→      const mean = sum / vals.length;
+   809→      const mid = Math.floor(sorted.length / 2);
+   810→      const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+   811→      const std = sorted.length > 1 ? Math.sqrt(vals.reduce((s, x) => s + (x - mean) ** 2, 0) / (vals.length - 1)) : 0;
+   812→      return { n: vals.length, sum, mean, median, std, min: sorted[0], max: sorted[sorted.length - 1] };
+   813→    })();
+   814→    return stats;
+   815→  }, [cells, selectedCol, usedR]);
+   816→
+   817→  const transformCol = (mode: "trim" | "upper" | "lower" | "title") => {
+   818→    const next = { ...cells };
+   819→    for (let r = 0; r < usedR; r++) {
+   820→      const ref = refFor(selectedCol, r);
+   821→      const v = next[ref];
+   822→      if (v === undefined || v.startsWith("=")) continue;
+   823→      if (mode === "trim") next[ref] = v.trim();
+   824→      if (mode === "upper") next[ref] = v.toUpperCase();
+   825→      if (mode === "lower") next[ref] = v.toLowerCase();
+   826→      if (mode === "title") next[ref] = v.toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
+   827→    }
+   828→    setCells(next);
+   829→  };
+   830→
+   831→  const activeRaw = cells[active] ?? "";
+   832→  const formulaCount = Object.values(cells).filter((v) => v.startsWith("=")).length;
+   833→
+   834→  /* status bar: Excel-standard selection summary for the active column */
+   835→  const statusBar = React.useMemo(() => {
+   836→    let count = 0, numCount = 0, sum = 0;
+   837→    for (let r = 0; r < usedR; r++) {
+   838→      const raw = displayValue(refFor(selectedCol, r), cells);
+   839→      if (raw === "") continue;
+   840→      count++;
+   841→      const v = parseFloat(raw.replace(/[$,\s]/g, ""));
+   842→      if (!isNaN(v)) { numCount++; sum += v; }
+   843→    }
+   844→    return { count, numCount, sum, avg: numCount ? sum / numCount : 0 };
+   845→  }, [cells, selectedCol, usedR]);
+   846→
+   847→  const insertFormula = (tpl: string) => {
+   848→    setEditVal(tpl);
+   849→  };
+   850→
+   851→  const FORMULA_BUTTONS: { label: string; tpl: string; hint: string }[] = [
+   852→    { label: "SUM", tpl: "=SUM(K2:K50)", hint: "Add a range of numbers" },
+   853→    { label: "AVERAGE", tpl: "=AVERAGE(K2:K50)", hint: "Arithmetic mean" },
+   854→    { label: "COUNT", tpl: "=COUNT(K2:K50)", hint: "Count numeric cells" },
+   855→    { label: "COUNTA", tpl: "=COUNTA(A2:A50)", hint: "Count non-empty cells" },
+   856→    { label: "IF", tpl: '=IF(J2>1000,"Big","Small")', hint: "Conditional logic" },
+   857→    { label: "IFERROR", tpl: '=IFERROR(J2/K2,"n/a")', hint: "Trap errors with a fallback" },
+   858→    { label: "SUMIF", tpl: '=SUMIF(F:F,"North",K:K)', hint: "Conditional sum" },
+   859→    { label: "SUMIFS", tpl: '=SUMIFS(K:K,F:F,"North",E:E,"Retail")', hint: "Sum with multiple criteria" },
+   860→    { label: "COUNTIF", tpl: '=COUNTIF(J:J,">500")', hint: "Conditional count" },
+   861→    { label: "COUNTIFS", tpl: '=COUNTIFS(F:F,"North",J:J,">500")', hint: "Count with multiple criteria" },
+   862→    { label: "AVERAGEIF", tpl: '=AVERAGEIF(F:F,"West",K:K)', hint: "Conditional average" },
+   863→    { label: "VLOOKUP", tpl: '=VLOOKUP("Office Chair",G2:H21,2,FALSE)', hint: "Classic table lookup" },
+   864→    { label: "XLOOKUP", tpl: '=XLOOKUP("Office Chair",G2:G21,H2:H21,"not found")', hint: "Modern lookup — any direction" },
+   865→    { label: "INDEX", tpl: "=INDEX(H2:H21,3)", hint: "Value at position in a range" },
+   866→    { label: "MATCH", tpl: '=MATCH("Office Chair",G2:G21,0)', hint: "Position of a value (pairs with INDEX)" },
+   867→    { label: "ROUND", tpl: "=ROUND(J2/12,2)", hint: "Round to N decimals" },
+   868→    { label: "TEXT", tpl: '=TRIM(B2)&" "&C2', hint: "Combine + clean text" },
+   869→  ];
+   870→
+   871→  /* dynamic coach tips */
+   872→  const tips: string[] = React.useMemo(() => {
+   873→    const t: string[] = [];
+   874→    if (usedR <= 1) {
+   875→      t.push("The sheet is empty. Load a sample file from the picker above — try **Retail Sales 2025 (Clean)** first.");
+   876→    } else {
+   877→      if (formulaCount === 0) t.push("You have data but no formulas yet. Click an empty cell under the last column and type ~ =SUM(K2:K50) ~ — then press Enter.");
+   878→      else if (formulaCount < 3) t.push(`Nice — ${formulaCount} formula${formulaCount > 1 ? "s" : ""} so far. Try dragging the logic down with **Fill down** or write ~ =IF(J2>500,\"High\",\"Low\") ~.`);
+   879→      if (colStats && colStats.n > 5) {
+   880→        const skew = Math.abs(colStats.mean - colStats.median) / Math.max(1, Math.abs(colStats.median));
+   881→        t.push(skew > 0.25
+   882→          ? `Column ${colName(selectedCol)} is skewed (mean ${fmtNum(colStats.mean)} vs median ${fmtNum(colStats.median)}). In reports, quote the **median**.`
+   883→          : `Column ${colName(selectedCol)} is fairly symmetric — the mean ${fmtNum(colStats.mean)} is a safe summary.`);
+   884→      }
+   885→      t.push("Press **Enter** to move down, **Tab** to move right, **F2-style** double-click to edit a cell. Formulas update instantly when you change inputs.");
+   886→    }
+   887→    return t.slice(0, 3);
+   888→  }, [usedR, formulaCount, colStats, selectedCol]);
+   889→
+   890→  return (
+   891→    <div className="space-y-4">
+   892→      <ToolHeader
+   893→        icon={<FileSpreadsheet className="h-5 w-5 text-emerald-500 dark:text-emerald-400" />}
+   894→        title="Excel Studio"
+   895→        subtitle="Full spreadsheet with a real formula engine — SUM to VLOOKUP, stats, sort, dedupe, CSV in/out"
+   896→        actions={
+   897→          <>
+   898→            <DatasetPicker onPick={loadDataset} />
+   899→            {loadedInfo && <span className="hidden max-w-[260px] truncate text-[11px] text-muted-foreground lg:inline" title={loadedInfo}>{loadedInfo}</span>}
+   900→            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} />
+   901→            <Button variant="outline" size="sm" className="border-border" onClick={() => fileRef.current?.click()}><Upload className="h-4 w-4" /> Import CSV</Button>
+   902→            <Button variant="outline" size="sm" className="border-border" onClick={exportCSV}><Download className="h-4 w-4" /> Export CSV</Button>
+   903→          </>
+   904→        }
+   905→      />
+   906→
+   907→      {/* formula bar */}
+   908→      <div className="flex items-center gap-2">
+   909→        <div className="flex h-9 w-20 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 font-mono text-sm font-bold text-emerald-700 dark:text-emerald-300">{active}</div>
+   910→        <div className="flex h-9 flex-1 items-center rounded-lg border border-border bg-muted/50 px-3 font-mono text-sm text-foreground">
+   911→          <Sigma className="mr-2 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+   912→          <input
+   913→            className="w-full bg-transparent outline-none placeholder:text-muted-foreground/50"
+   914→            placeholder='Type a value or =SUM(A1:A50)  ·  =VLOOKUP("Office Chair",G2:H21,2)'
+   915→            value={editVal ?? activeRaw}
+   916→            onChange={(e) => setEditVal(e.target.value)}
+   917→            onKeyDown={(e) => {
+   918→              if (e.key === "Enter") { commit(); gridRef.current?.focus(); }
+   919→              if (e.key === "Escape") setEditVal(null);
+   920→            }}
+   921→            onFocus={() => { if (editVal === null) setEditVal(activeRaw); }}
+   922→          />
+   923→        </div>
+   924→      </div>
+   925→
+   926→      {/* ribbon — Excel-standard tabbed toolbar */}
+   927→      <div className={`${PANEL} overflow-hidden`}>
+   928→        <div className="flex items-center gap-1 border-b border-border px-2 pt-1.5" role="tablist" aria-label="Excel ribbon tabs">
+   929→          {([["home", "Home"], ["formulas", "Formulas"], ["data", "Data"]] as const).map(([id, label]) => (
+   930→            <button
+   931→              key={id}
+   932→              role="tab"
+   933→              aria-selected={ribbonTab === id}
+   934→              onClick={() => setRibbonTab(id)}
+   935→              className={`rounded-t-lg px-3.5 py-1.5 text-[12.5px] font-semibold transition-colors ${
+   936→                ribbonTab === id
+   937→                  ? "border border-b-0 border-border bg-muted/60 text-emerald-700 dark:text-emerald-300"
+   938→                  : "text-muted-foreground hover:bg-muted/50"
+   939→              }`}
+   940→            >
+   941→              {label}
+   942→            </button>
+   943→          ))}
+   944→          <span className="ml-auto pb-1 pr-1 text-[10.5px] text-muted-foreground">
+   945→            Column {colName(selectedCol)} selected · {usedR > 1 ? `${usedR - 1} data rows` : "empty sheet"}
+   946→          </span>
+   947→        </div>
+   948→
+   949→        <div className="flex flex-wrap items-center gap-1.5 px-2.5 py-2 text-xs">
+   950→          {ribbonTab === "home" && (
+   951→            <>
+   952→              <span className="px-1 text-muted-foreground">Sort col {colName(selectedCol)}:</span>
+   953→              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, 1)}>A→Z</Button>
+   954→              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => sortRows(selectedCol, -1)}>Z→A</Button>
+   955→              <span className="mx-1 h-4 w-px bg-border" />
+   956→              <TooltipProvider delayDuration={200}>
+   957→                <Tooltip>
+   958→                  <TooltipTrigger asChild>
+   959→                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={fillDown}><ArrowDownToLine className="mr-1 h-3 w-3" />Fill down</Button>
+   960→                  </TooltipTrigger>
+   961→                  <TooltipContent>Copies the active cell down to the end of the data (also Ctrl+D) — great for repeating a formula</TooltipContent>
+   962→                </Tooltip>
+   963→              </TooltipProvider>
+   964→              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={dedupeRows}><Eraser className="mr-1 h-3 w-3" />Remove duplicate rows</Button>
+   965→              <span className="mx-1 h-4 w-px bg-border" />
+   966→              <span className="px-1 text-muted-foreground">Text col {colName(selectedCol)}:</span>
+   967→              {(["trim", "upper", "lower", "title"] as const).map((m) => (
+   968→                <Button key={m} variant="ghost" size="sm" className="h-7 px-2 text-xs capitalize" onClick={() => transformCol(m)}><Wand2 className="mr-1 h-3 w-3" />{m}</Button>
+   969→              ))}
+   970→              <span className="mx-1 h-4 w-px bg-border" />
+   971→              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-600 hover:bg-red-500/10 dark:text-red-300" onClick={() => { setCells({}); setLoadedInfo(null); }}><Trash2 className="mr-1 h-3 w-3" />Clear sheet</Button>
+   972→            </>
+   973→          )}
+   974→
+   975→          {ribbonTab === "formulas" && (
+   976→            <>
+   977→              <span className="px-1 text-muted-foreground">Click one, then edit the cell — it lands in {active}:</span>
+   978→              {FORMULA_BUTTONS.map((f) => (
+   979→                <TooltipProvider key={f.label} delayDuration={150}>
+   980→                  <Tooltip>
+   981→                    <TooltipTrigger asChild>
+   982→                      <Button variant="ghost" size="sm" className="h-7 px-2 font-mono text-[11px] text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300" onClick={() => insertFormula(f.tpl)}>
+   983→                        {f.label}
+   984→                      </Button>
+   985→                    </TooltipTrigger>
+   986→                    <TooltipContent side="bottom" className="text-xs">{f.hint}</TooltipContent>
+   987→                  </Tooltip>
+   988→                </TooltipProvider>
+   989→              ))}
+   990→            </>
+   991→          )}
+   992→
+   993→          {ribbonTab === "data" && (
+   994→            <>
+   995→              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files?.[0] && importCSV(e.target.files[0])} />
+   996→              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => fileRef.current?.click()}><Upload className="mr-1 h-3 w-3" />Import CSV</Button>
+   997→              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={exportCSV}><Download className="mr-1 h-3 w-3" />Export CSV</Button>
+   998→              <span className="mx-1 h-4 w-px bg-border" />
+   999→              <span className="px-1 text-muted-foreground">Download practice files:</span>
+  1000→              {["messy_sales", "bank_transactions", "deliveries", "server_logs", "finance_gl", "inventory"].map((id) => (
+  1001→                <button key={id} className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => downloadDatasetCSV(id)}>
+  1002→                  {getDatasetById(id)?.name.split(" (")[0] ?? id}
+  1003→                </button>
+  1004→              ))}
+  1005→              <span className="mx-1 h-4 w-px bg-border" />
+  1006→              <span className="flex items-center gap-1.5">
+  1007→                <Input ref={nameRef} value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="Sheet name" className="h-7 w-28 border-border bg-background/60 text-xs" />
+  1008→                <Button variant="outline" size="sm" className="h-7 border-border px-2 text-xs" onClick={() => sheetName && saveSheet(sheetName, cells)}><Save className="h-3 w-3" /> Save</Button>
+  1009→              </span>
+  1010→            </>
+  1011→          )}
+  1012→        </div>
+  1013→      </div>
+  1014→
+  1015→      {/* grid + stats */}
+  1016→      <div className="flex flex-col gap-4 lg:flex-row">
+  1017→        <div className="flex min-w-0 flex-1 flex-col">
+  1018→          <div
+  1019→            ref={gridRef}
+  1020→            tabIndex={0}
+  1021→            onKeyDown={onKey}
+  1022→            className={`${PANEL} overflow-auto outline-none scrollbar-thin`} style={{ maxHeight: "58vh" }}
+  1023→          >
+  1024→          <table className="border-collapse text-[13px]" style={{ minWidth: viewCols * 96 }}>
+  1025→            <thead>
+  1026→              <tr className="sticky top-0 z-10 bg-card">
+  1027→                <th className="sticky left-0 z-20 w-10 border-b border-r border-border bg-card px-1 py-1.5 text-[10px] font-medium text-muted-foreground" />
+  1028→                {Array.from({ length: viewCols }, (_, c) => (
+  1029→                  <th
+  1030→                    key={c}
+  1031→                    onClick={() => setSelectedCol(c)}
+  1032→                    className={`cursor-pointer border-b border-r border-border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+  1033→                      selectedCol === c
+  1034→                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+  1035→                        : "bg-card text-muted-foreground hover:bg-muted"
+  1036→                    }`}
+  1037→                  >
+  1038→                    {colName(c)}
+  1039→                  </th>
+  1040→                ))}
+  1041→              </tr>
+  1042→            </thead>
+  1043→            <tbody>
+  1044→              {Array.from({ length: viewRows }, (_, r) => (
+  1045→                <tr key={r} className="group">
+  1046→                  <td className={`sticky left-0 z-10 w-10 border-b border-r border-border bg-card px-1 py-1 text-center text-[10px] font-medium ${active.endsWith(String(r + 1)) ? "text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}`}>{r + 1}</td>
+  1047→                  {Array.from({ length: viewCols }, (_, c) => {
+  1048→                    const ref = refFor(c, r);
+  1049→                    const isA = ref === active;
+  1050→                    const raw = cells[ref];
+  1051→                    const isFormula = !!raw?.startsWith("=");
+  1052→                    const disp = displayValue(ref, cells);
+  1053→                    const numeric = disp !== "" && !isNaN(parseFloat(disp.replace(/[$,\s]/g, "")));
+  1054→                    return (
+  1055→                      <td
+  1056→                        key={c}
+  1057→                        onClick={() => { if (editVal !== null && isA) return; commit(); setActive(ref); }}
+  1058→                        onDoubleClick={() => { setActive(ref); startEdit(); }}
+  1059→                        className={`relative h-[26px] max-w-[180px] cursor-cell overflow-hidden whitespace-nowrap border-b border-r border-border/60 px-2 py-0.5 text-right transition-colors ${
+  1060→                          numeric ? "text-foreground" : "text-left text-foreground/85"
+  1061→                        } ${isA ? "outline outline-2 -outline-offset-1 outline-emerald-500" : selectedCol === c ? "bg-emerald-500/[0.05]" : "hover:bg-muted/40"}`}
+  1062→                        style={{ minWidth: 96 }}
+  1063→                      >
+  1064→                        {isA && editVal !== null ? (
+  1065→                          <input
+  1066→                            autoFocus
+  1067→                            className="absolute inset-0 z-10 w-full bg-background px-2 font-mono text-[12px] text-foreground outline outline-2 -outline-offset-1 outline-emerald-500"
+  1068→                            value={editVal}
+  1069→                            onChange={(e) => setEditVal(e.target.value)}
+  1070→                            onBlur={commit}
+  1071→                          />
+  1072→                        ) : (
+  1073→                          <span className={isFormula ? "italic" : ""}>{disp}</span>
+  1074→                        )}
+  1075→                        {isFormula && <span className="absolute left-0.5 top-0.5 h-1 w-1 rounded-full bg-sky-500/70" />}
+  1076→                      </td>
+  1077→                    );
+  1078→                  })}
+  1079→                </tr>
+  1080→              ))}
+  1081→            </tbody>
+  1082→          </table>
+  1083→          </div>
+  1084→
+  1085→          {/* status bar — Excel-standard selection summary */}
+  1086→          <div className={`${PANEL} mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 text-[11px] text-muted-foreground`}>
+  1087→            <span className={editVal !== null ? "font-semibold text-emerald-700 dark:text-emerald-300" : ""}>{editVal !== null ? "Editing" : "Ready"}</span>
+  1088→            <span className="h-3 w-px bg-border" />
+  1089→            <span>Cell <b className="font-mono text-foreground">{active}</b></span>
+  1090→            <span className="h-3 w-px bg-border" />
+  1091→            <span>Count: <b className="font-mono text-foreground">{statusBar.count.toLocaleString()}</b></span>
+  1092→            <span>Numeric: <b className="font-mono text-foreground">{statusBar.numCount.toLocaleString()}</b></span>
+  1093→            <span>Sum: <b className="font-mono text-foreground">{fmtNum(statusBar.sum)}</b></span>
+  1094→            <span>Average: <b className="font-mono text-foreground">{fmtNum(statusBar.avg)}</b></span>
+  1095→            <span className="ml-auto hidden sm:inline">of column {colName(selectedCol)} · arrows move · Enter edits · Ctrl+D fills down</span>
+  1096→          </div>
+  1097→
+  1098→          {/* sheet tabs — Excel-standard bottom tabs */}
+  1099→          <div className="mt-2 flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
+  1100→            <button
+  1101→              onClick={() => gridRef.current?.focus()}
+  1102→              className={`flex shrink-0 items-center gap-1 rounded-t-lg border border-b-0 border-border px-3.5 py-1.5 text-xs font-semibold ${sheetName ? "bg-muted/50 text-muted-foreground" : "bg-card text-foreground"}`}
+  1103→              title={sheetName ? "Unsaved working sheet" : "Active sheet"}
+  1104→            >
+  1105→              <FileSpreadsheet className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+  1106→              {sheetName || "Sheet1"}
+  1107→            </button>
+  1108→            {Object.values(sheets).map((s) => (
+  1109→              <div key={s.name} className="group flex shrink-0 items-center gap-1 rounded-t-lg border border-b-0 border-border bg-card px-3 py-1.5 text-xs">
+  1110→                <button className="font-medium text-foreground/85 hover:text-foreground" onClick={() => { setCells(s.cells); setSheetName(s.name); }} title="Open this saved sheet">
+  1111→                  {s.name}
+  1112→                </button>
+  1113→                <button className="text-muted-foreground/50 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100" aria-label={`Delete ${s.name}`} onClick={() => deleteSheet(s.name)}>
+  1114→                  <Trash2 className="h-3 w-3" />
+  1115→                </button>
+  1116→              </div>
+  1117→            ))}
+  1118→            <button
+  1119→              onClick={() => {
+  1120→                const nm = sheetName || `Sheet${Object.keys(sheets).length + 1}`;
+  1121→                saveSheet(nm, cells);
+  1122→                setSheetName(nm);
+  1123→              }}
+  1124→              className="flex shrink-0 items-center gap-1 rounded-t-lg px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted"
+  1125→              title="Save the current sheet as a tab (type a name in the Data tab first)"
+  1126→            >
+  1127→              <Plus className="h-3.5 w-3.5" /> Save sheet
+  1128→            </button>
+  1129→          </div>
+  1130→        </div>
+  1131→
+  1132→        {/* stats + help */}
+  1133→        <div className="w-full shrink-0 space-y-3 lg:w-72">
+  1134→          <div className={PANEL}>
+  1135→            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Column stats — {colName(selectedCol)}</span></div>
+  1136→            <div className="p-3 text-[13px]">
+  1137→              {colStats ? (
+  1138→                <div className="space-y-1.5">
+  1139→                  {[
+  1140→                    ["Count", colStats.n], ["Sum", colStats.sum], ["Mean", colStats.mean],
+  1141→                    ["Median", colStats.median], ["Std dev", colStats.std], ["Min", colStats.min], ["Max", colStats.max],
+  1142→                  ].map(([k, v]) => (
+  1143→                    <div key={k as string} className="flex justify-between">
+  1144→                      <span className="text-muted-foreground">{k as string}</span>
+  1145→                      <span className="font-mono text-foreground">{fmtNum(v as number)}</span>
+  1146→                    </div>
+  1147→                  ))}
+  1148→                  <p className="pt-1 text-[11px] leading-snug text-muted-foreground">If mean ≫ median the column is right-skewed — report the median.</p>
+  1149→                </div>
+  1150→              ) : (
+  1151→                <p className="text-muted-foreground">Select a column with numbers. Try loading sample data first.</p>
+  1152→              )}
+  1153→            </div>
+  1154→          </div>
+  1155→          <div className={PANEL}>
+  1156→            <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Formula cheat-sheet</span></div>
+  1157→            <div className="space-y-1 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+  1158→              <p><span className="text-emerald-700 dark:text-emerald-300">=SUM(B2:B100)</span> · <span className="text-emerald-700 dark:text-emerald-300">=AVERAGE / MEDIAN / STDEV</span></p>
+  1159→              <p><span className="text-emerald-700 dark:text-emerald-300">=SUMIF(E:E,"North",J:J)</span> · <span className="text-emerald-700 dark:text-emerald-300">=SUMIFS(J:J,E:E,"N",F:F,"W")</span></p>
+  1160→              <p><span className="text-emerald-700 dark:text-emerald-300">=COUNTIF(E:E,"&gt;500")</span> · <span className="text-emerald-700 dark:text-emerald-300">=COUNTIFS(E:E,"N",J:J,"&gt;5")</span></p>
+  1161→              <p><span className="text-emerald-700 dark:text-emerald-300">=VLOOKUP("Desk",G:J,4)</span> · <span className="text-emerald-700 dark:text-emerald-300">=XLOOKUP("Desk",G:G,J:J)</span></p>
+  1162→              <p><span className="text-emerald-700 dark:text-emerald-300">=INDEX(J2:J21,3)</span> · <span className="text-emerald-700 dark:text-emerald-300">=MATCH("Desk",G2:G21,0)</span></p>
+  1163→              <p><span className="text-emerald-700 dark:text-emerald-300">=IF(J2&gt;1000,"Big","Small")</span> · <span className="text-emerald-700 dark:text-emerald-300">=IFERROR(J2/K2,"n/a")</span></p>
+  1164→              <p><span className="text-emerald-700 dark:text-emerald-300">=CONCAT(B2," ",C2)</span> · <span className="text-emerald-700 dark:text-emerald-300">=TEXTJOIN(", ",1,A2:A5)</span></p>
+  1165→              <p><span className="text-emerald-700 dark:text-emerald-300">=ROUND / ROUNDUP / ROUNDDOWN / INT / MOD</span></p>
+  1166→              <p><span className="text-emerald-700 dark:text-emerald-300">=LEFT / RIGHT / MID / LEN / TRIM / PROPER</span></p>
+  1167→            </div>
+  1168→          </div>
+  1169→        </div>
+  1170→      </div>
+  1171→
+  1172→      <Coach view="excel" mission={EXCEL_MISSION} tips={tips} why="Excel is still the #1 tool analysts touch daily. Companies test formula fluency in interviews (SUMIFs, VLOOKUP, IF) because cleaned, well-structured sheets are how estimates, budgets and one-off analyses actually get done — before anything reaches Power BI." />
+  1173→    </div>
+  1174→  );
+  1175→}
+  1176→

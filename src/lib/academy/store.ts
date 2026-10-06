@@ -90,6 +90,7 @@ interface AcademyState {
   saveDashboard: (d: SavedDashboard) => void;
   deleteDashboard: (id: string) => void;
   addWorkspaceFiles: (files: Omit<WorkspaceFile, "createdAt">[], projectId?: string) => number;
+  upsertWorkspaceFiles: (files: Omit<WorkspaceFile, "createdAt">[], projectId?: string) => { added: number; updated: number };
   removeWorkspaceFile: (path: string) => void;
   removeProjectFolder: (projectId: string) => void;
   clearWorkspace: () => void;
@@ -185,6 +186,19 @@ export const useAcademy = create<AcademyState>()(
           }));
         if (fresh.length) set({ workspaceFiles: [...get().workspaceFiles, ...fresh] });
         return fresh.length;
+      },
+      /** Pull support: insert new files and overwrite existing ones by path. */
+      upsertWorkspaceFiles: (files, projectId) => {
+        let added = 0;
+        let updated = 0;
+        const map = new Map(get().workspaceFiles.map((f) => [f.path, f]));
+        for (const f of files) {
+          if (map.has(f.path)) updated++;
+          else added++;
+          map.set(f.path, { ...f, createdAt: new Date().toISOString(), projectId });
+        }
+        set({ workspaceFiles: [...map.values()] });
+        return { added, updated };
       },
       removeWorkspaceFile: (path) =>
         set({ workspaceFiles: get().workspaceFiles.filter((f) => f.path !== path) }),
