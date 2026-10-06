@@ -1,0 +1,212 @@
+"use client";
+
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import * as React from "react";
+
+/* ---------- markdown-lite renderer ----------
+   Supports: **bold**, ~inline code~, "- " bullets, "~~~" code fences, "> " callouts,
+   "1. " numbered lists, blank-line separated paragraphs, | tables |
+----------------------------------------------- */
+export function Md({ text, className }: { text: string; className?: string }) {
+  const blocks: React.ReactNode[] = [];
+  const lines = text.split("\n");
+  let i = 0;
+  let key = 0;
+
+  const renderInline = (s: string): React.ReactNode[] => {
+    const out: React.ReactNode[] = [];
+    const re = /(\*\*[^*]+\*\*|~[^~]+~)/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(s))) {
+      if (m.index > last) out.push(s.slice(last, m.index));
+      const tok = m[0];
+      if (tok.startsWith("**")) out.push(<b key={`${key}-${m.index}`} className="text-foreground font-semibold">{tok.slice(2, -2)}</b>);
+      else out.push(
+        <code key={`${key}-${m.index}`} className="mx-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 text-[0.85em] font-mono text-emerald-300">
+          {tok.slice(1, -1)}
+        </code>
+      );
+      last = m.index + tok.length;
+    }
+    if (last < s.length) out.push(s.slice(last));
+    return out;
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.startsWith("~~~")) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith("~~~")) code.push(lines[i++]);
+      i++;
+      blocks.push(
+        <pre key={key++} className="my-3 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-4 text-[13px] leading-relaxed font-mono text-emerald-200/90 scrollbar-thin">
+          <code>{code.join("\n")}</code>
+        </pre>
+      );
+      continue;
+    }
+
+    if (line.startsWith("|")) {
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].startsWith("|")) {
+        const cells = lines[i].split("|").slice(1, -1).map((c) => c.trim());
+        if (!cells.every((c) => /^-+$/.test(c.replace(/ /g, "")) && c.length > 0)) rows.push(cells);
+        i++;
+      }
+      blocks.push(
+        <div key={key++} className="my-3 overflow-x-auto rounded-lg border border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-white/5">
+              <tr>{rows[0]?.map((c, ci) => <th key={ci} className="border-b border-white/10 px-3 py-2 text-left font-semibold text-emerald-300">{renderInline(c)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.slice(1).map((r, ri) => (
+                <tr key={ri} className="border-b border-white/5 last:border-0">
+                  {r.map((c, ci) => <td key={ci} className="px-3 py-2 text-zinc-300">{renderInline(c)}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
+    if (line.startsWith("- ")) {
+      const items: string[] = [];
+      while (i < lines.length && lines[i].startsWith("- ")) items.push(lines[i++].slice(2));
+      blocks.push(
+        <ul key={key++} className="my-3 space-y-2">
+          {items.map((it, ii) => (
+            <li key={ii} className="flex gap-2.5 text-[15px] leading-relaxed text-zinc-300">
+              <span className="mt-[9px] h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400" />
+              <span>{renderInline(it)}</span>
+            </li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    if (/^#{1,4}\s/.test(line)) {
+      const level = (line.match(/^#+/) ?? ["#"])[0].length;
+      const text = line.replace(/^#+\s*/, "");
+      const cls = level === 1
+        ? "mt-5 mb-2 text-xl font-extrabold tracking-tight text-white"
+        : level === 2
+          ? "mt-6 mb-2 border-b border-white/10 pb-1.5 text-lg font-bold text-emerald-200"
+          : "mt-4 mb-1.5 text-[15px] font-bold text-emerald-300";
+      blocks.push(<p key={key++} className={cls}>{renderInline(text)}</p>);
+      i++;
+      continue;
+    }
+
+    if (/^\d+\.\s/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) items.push(lines[i++].replace(/^\d+\.\s/, ""));
+      blocks.push(
+        <ol key={key++} className="my-3 space-y-2">
+          {items.map((it, ii) => (
+            <li key={ii} className="flex gap-2.5 text-[15px] leading-relaxed text-zinc-300">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 text-[11px] font-bold text-emerald-300">{ii + 1}</span>
+              <span>{renderInline(it)}</span>
+            </li>
+          ))}
+        </ol>
+      );
+      continue;
+    }
+
+    if (line.startsWith("> ")) {
+      const quote: string[] = [];
+      while (i < lines.length && lines[i].startsWith("> ")) quote.push(lines[i++].slice(2));
+      const joined = quote.join(" ");
+      const isTip = /^TIP:/i.test(joined);
+      const isReal = /^REAL WORLD:/i.test(joined);
+      blocks.push(
+        <div key={key++} className={cn(
+          "my-4 rounded-lg border-l-4 bg-white/[0.03] px-4 py-3 text-[14px] leading-relaxed",
+          isTip ? "border-amber-400/80 text-amber-100/90" : isReal ? "border-sky-400/80 text-sky-100/90" : "border-emerald-400/80 text-zinc-300"
+        )}>
+          <span className={cn("mr-2 font-bold uppercase tracking-wide text-[11px]", isTip ? "text-amber-400" : isReal ? "text-sky-400" : "text-emerald-400")}>
+            {isTip ? "💡 Tip" : isReal ? "🏢 Real world" : "Note"}
+          </span>
+          {renderInline(joined.replace(/^(TIP:|REAL WORLD:)\s*/i, ""))}
+        </div>
+      );
+      continue;
+    }
+
+    if (line.trim() === "") { i++; continue; }
+
+    const para: string[] = [];
+    while (i < lines.length && lines[i].trim() !== "" && !/^[-~>|#]|\d+\.\s/.test(lines[i])) para.push(lines[i++]);
+    if (para.length)
+      blocks.push(
+        <p key={key++} className="my-3 text-[15px] leading-relaxed text-zinc-300">
+          {renderInline(para.join(" "))}
+        </p>
+      );
+    else i++;
+  }
+
+  return <div className={className}>{blocks}</div>;
+}
+
+/* ---------- level / difficulty badge colors ---------- */
+export function levelBadgeCls(level: string): string {
+  switch (level) {
+    case "Beginner": return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+    case "Intermediate": return "bg-amber-500/15 text-amber-300 border-amber-500/30";
+    case "Advanced": return "bg-orange-500/15 text-orange-300 border-orange-500/30";
+    case "Master": return "bg-rose-500/15 text-rose-300 border-rose-500/30";
+    default: return "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
+  }
+}
+
+/* ---------- section header ---------- */
+export function ToolHeader({ icon, title, subtitle, accent = "emerald", actions }: {
+  icon: React.ReactNode; title: string; subtitle: string; accent?: string; actions?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <div className={cn("flex h-11 w-11 items-center justify-center rounded-xl border text-xl",
+          accent === "emerald" && "border-emerald-500/30 bg-emerald-500/10",
+          accent === "amber" && "border-amber-500/30 bg-amber-500/10",
+          accent === "sky" && "border-sky-500/30 bg-sky-500/10",
+          accent === "violet" && "border-violet-500/30 bg-violet-500/10",
+          accent === "rose" && "border-rose-500/30 bg-rose-500/10")}>
+          {icon}
+        </div>
+        <div>
+          <h1 className="text-lg font-bold tracking-tight text-white sm:text-xl">{title}</h1>
+          <p className="text-[13px] text-zinc-400">{subtitle}</p>
+        </div>
+      </div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+export function fmtNum(v: number): string {
+  if (!isFinite(v)) return "—";
+  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(v) >= 10_000) return `${(v / 1000).toFixed(1)}k`;
+  if (Number.isInteger(v)) return v.toLocaleString("en-US");
+  return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+export function fmtMoney(v: number): string {
+  if (!isFinite(v)) return "—";
+  if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(v) >= 1000) return `$${(v / 1000).toFixed(1)}k`;
+  return `$${v.toFixed(2)}`;
+}
+
+export const PANEL = "rounded-xl border border-white/10 bg-zinc-900/60 backdrop-blur";
+export const PANEL_HEAD = "flex items-center justify-between gap-2 border-b border-white/10 px-4 py-3";
