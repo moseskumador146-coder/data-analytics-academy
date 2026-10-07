@@ -16,7 +16,8 @@ import {
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PANEL, PANEL_HEAD, fmtMoney, fmtNum } from "./shared";
-import { Coach } from "./Coach";
+import { coachSay } from "@/lib/academy/coach-bus";
+import { LiveCoach } from "./LiveCoach";
 import { useAcademy, type SavedDashboard } from "@/lib/academy/store";
 import { getDatasetById, getSampleCatalog, downloadFile, type Dataset, type Row } from "@/lib/academy/datasets";
 import { createDaxEngine } from "@/lib/academy/dax-engine";
@@ -28,7 +29,7 @@ import {
   Activity, BarChart3, ChartPie, Check, ChevronDown, ChevronUp, CircleHelp, ClipboardList, Columns3,
   Copy, Database, Download, Eye, EyeOff, FileJson, Filter, Gauge, Grid3x3, LayoutDashboard,
   LineChart as LineIcon, Link2, ListFilter, Maximize2, Paintbrush, Plus, Redo2, RotateCcw, Save,
-  Search, Sigma, SlidersHorizontal, Sparkles, Square, Table2, Trash2, TrendingUp, Type,
+  Search, Sigma, SlidersHorizontal, Sparkles, Square, Table2, Trash2, TrendingUp, Type, Minimize2,
   Undo2, Upload, Calendar, X, Palette, Pencil, MoreHorizontal, MousePointerClick, Move, ZoomIn, ZoomOut,
 } from "lucide-react";
 import {
@@ -39,7 +40,7 @@ import {
 
 /* ================= model ================= */
 type Agg = "sum" | "avg" | "count" | "min" | "max";
-type WType = "kpi" | "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "combo" | "table" | "slicer" | "treemap" | "funnel" | "gauge" | "matrix" | "textbox" | "shape";
+type WType = "kpi" | "kpi2" | "waterfall" | "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "combo" | "table" | "slicer" | "treemap" | "funnel" | "gauge" | "matrix" | "textbox" | "shape";
 
 interface WFormat {
   legend?: boolean;
@@ -98,6 +99,8 @@ const THEMES: { name: string; colors: string[] }[] = [
 
 const WTYPE_META: Record<WType, { label: string; icon: React.ReactNode; blurb: string }> = {
   kpi: { label: "Card", icon: <Gauge className="h-4 w-4" />, blurb: "One big number — the 5-second layer" },
+  kpi2: { label: "KPI", icon: <Gauge className="h-4 w-4" />, blurb: "Value vs target with a trend — the exec glance" },
+  waterfall: { label: "Waterfall", icon: <TrendingUp className="h-4 w-4" />, blurb: "How parts build to a total — contribution view" },
   bar: { label: "Clustered column", icon: <BarChart3 className="h-4 w-4" />, blurb: "Compare categories side by side" },
   line: { label: "Line chart", icon: <LineIcon className="h-4 w-4" />, blurb: "Trend over time" },
   area: { label: "Area chart", icon: <TrendingUp className="h-4 w-4" />, blurb: "Volume over time" },
@@ -288,6 +291,13 @@ function newWidget(type: WType, ds: Dataset, existing: Widget[]): Widget {
   };
   if (cascade++ % 2 === 1) { base.x += 0; }
   if (type === "kpi") base.title = numericCols[0]?.name ?? "Total";
+  if (type === "kpi2") { base.title = `${numericCols[0]?.name ?? "Total"} KPI`; base.topN = 0; base.w = 30; base.h = 26; }
+  if (type === "waterfall") {
+    const dimName = ds.columns.find((c) => c.key === base.dimension)?.name;
+    const measName = ds.columns.find((c) => c.key === base.measure)?.name;
+    base.title = `${measName ?? "Value"} by ${dimName ?? "Category"} (waterfall)`;
+    base.topN = 8;
+  }
   if (type === "slicer") { base.field = bestDimension(ds); base.title = "Slicer"; base.selected = []; base.w = 20; base.h = 44; base.x = 2; base.y = 3; }
   if (type === "textbox") { base.title = "Text box"; base.text = "Double-click into the Format tab to edit this text. Use text boxes for page titles, definitions and takeaways — exactly like Power BI."; base.showTitle = false; base.w = 30; base.h = 14; }
   if (type === "shape") { base.title = "Shape"; base.showTitle = false; base.w = 14; base.h = 8; base.color = 0; }
@@ -316,16 +326,6 @@ function smartLayout(ds: Dataset, ws: Widget[]): Widget[] {
 }
 
 /* ================= component ================= */
-const BI_MISSION = [
-  { id: "load", label: "Load a dataset", detail: "Use the **data picker** — *Retail Sales 2025 (Clean)* is the classic starter; *App Events* (11,000 rows) is the big-file stress test." },
-  { id: "build", label: "Build 3 visuals", detail: "In **Report view**, click visual types in the **Visualizations** pane (or the Insert ribbon): a Card KPI, a clustered column by category, and a line over months. Drag visuals anywhere — grab a header to move, the corner to resize." },
-  { id: "fields", label: "Wire the fields", detail: "Select a visual, open **Fields**, tick checkboxes to add columns, then set **Axis / Values** wells and the aggregation (Sum / Average / Count…) like the real field wells." },
-  { id: "format", label: "Format like PBI", detail: "Toggle the **Format** tab in the Visualizations pane: title, legend position, data labels, colors, background & border. Turn on gridlines in **View → Gridlines** for pixel alignment." },
-  { id: "cross", label: "Cross-filter the page", detail: "**Click a column** in the category chart — every other visual filters instantly (Power BI's signature interaction). Click again to un-filter. Add a **Slicer** for persistent filtering." },
-  { id: "model", label: "Inspect Data & Model", detail: "Switch to **Data view** to check the grain and column summaries; **Model view** shows the schema card + every implicit measure your visuals created." },
-  { id: "ship", label: "Save & export", detail: "Save the report to your Academy portfolio, or **Export JSON** — it round-trips: import it back anytime." },
-];
-
 export function DashboardTool() {
   const { dashboards, saveDashboard, deleteDashboard, daxMeasures, saveDaxMeasure } = useAcademy();
   const [dsId, setDsId] = React.useState("clean_sales");
@@ -365,6 +365,7 @@ export function DashboardTool() {
   const [enterDataDlg, setEnterDataDlg] = React.useState(false);
   const [enterDataCsv, setEnterDataCsv] = React.useState("");
   const [canvasZoom, setCanvasZoom] = React.useState(1);
+  const [focusId, setFocusId] = React.useState<string | null>(null);
   const [showVisPane, setShowVisPane] = React.useState(true);
   const [showFieldsPane, setShowFieldsPane] = React.useState(true);
   const [showFiltersPane, setShowFiltersPane] = React.useState(true);
@@ -434,10 +435,16 @@ export function DashboardTool() {
   const setWidgets = (fn: (ws: Widget[]) => Widget[]) => updatePage((p) => ({ widgets: fn(p.widgets) }));
 
   const update = (id: string, patch: Partial<Widget> | ((w: Widget) => Partial<Widget>)) => {
+    if (patch && typeof patch === "object") {
+      if ("agg" in patch) coachSay("dashboard", "pbi.agg", `Changed the aggregation to ${String(patch.agg).toUpperCase()}`);
+      else if ("format" in patch) coachSay("dashboard", "pbi.format", "Changed a visual's formatting");
+      else if ("title" in patch) coachSay("dashboard", "pbi.format", "Renamed a visual's title");
+    }
     setWidgets((ws) => ws.map((w) => (w.id === id ? { ...w, ...(typeof patch === "function" ? patch(w) : patch) } : w)));
   };
 
   const addWidget = (type: WType) => {
+    coachSay("dashboard", "pbi.visual", `Added a ${WTYPE_META[type].label} visual to the page`, WTYPE_META[type].label);
     pushUndo();
     const w = newWidget(type, ds, page.widgets);
     setWidgets((ws) => [...ws, w]);
@@ -446,6 +453,7 @@ export function DashboardTool() {
   };
 
   const removeWidget = (id: string) => {
+    coachSay("dashboard", "pbi.remove", "Removed a visual from the page");
     pushUndo();
     setWidgets((ws) => ws.filter((w) => w.id !== id));
     if (selectedId === id) setSelectedId(null);
@@ -462,6 +470,7 @@ export function DashboardTool() {
   };
 
   const addPage = () => {
+    coachSay("dashboard", "pbi.page", "Added a report page");
     pushUndo();
     const p: Page = { id: `p_${Math.random().toString(36).slice(2, 7)}`, name: `Page ${pages.length + 1}`, widgets: [] };
     setPages((ps) => [...ps, p]);
@@ -495,6 +504,7 @@ export function DashboardTool() {
   };
 
   const renamePage = (id: string) => {
+    coachSay("dashboard", "pbi.page", "Renamed a report page");
     const p = pages.find((x) => x.id === id);
     if (!p) return;
     const nm = window.prompt("Rename page", p.name);
@@ -508,6 +518,8 @@ export function DashboardTool() {
   };
 
   const loadDataset = (id: string) => {
+    const nd = getDatasetById(id);
+    coachSay("dashboard", "pbi.data", "Connected a dataset to the report", nd?.name ?? id);
     setDsId(id);
     setSelectedId(null);
     setCrossFilters([]);
@@ -517,6 +529,7 @@ export function DashboardTool() {
 
   /* ---------- cross-filtering ---------- */
   const toggleCrossFilter = (col: string, val: string, from: string) => {
+    coachSay("dashboard", "pbi.crossfilter", `Cross-filtered the page: ${ds.columns.find((c) => c.key === col)?.name ?? col} = ${val}`);
     setCrossFilters((cfs) => {
       const exists = cfs.find((c) => c.col === col && c.val === val && c.from === from);
       if (exists) return cfs.filter((c) => !(c.col === col && c.val === val && c.from === from));
@@ -525,6 +538,7 @@ export function DashboardTool() {
   };
 
   const slicerSet = (wid: string, field: string, vals: string[]) => {
+    coachSay("dashboard", "pbi.slicer", `Slicer set: ${ds.columns.find((c) => c.key === field)?.name ?? field} (${vals.length} selected)`);
     setCrossFilters((cfs) => [...cfs.filter((c) => c.from !== wid), ...vals.map((v) => ({ col: field, val: v, from: wid }))]);
   };
 
@@ -552,6 +566,10 @@ export function DashboardTool() {
       }
     };
     const onUp = () => {
+      if (dragState.current && (dragState.current.kind === "move" || dragState.current.kind === "resize")) {
+        const w0 = dragState.current;
+        coachSay("dashboard", "pbi.drag", w0.kind === "move" ? "Moved a visual on the canvas" : "Resized a visual on the canvas");
+      }
       dragState.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -560,8 +578,20 @@ export function DashboardTool() {
     window.addEventListener("mouseup", onUp);
   };
 
+  /* live-coach tips — recomputed from report state */
+  const coachTips: string[] = React.useMemo(() => {
+    const t: string[] = [];
+    t.push("Free-form canvas: **drag a visual's header** to move it, **drag the bottom-right corner** to resize. \u201cTidy layout\u201d (View tab) snaps everything back to a clean grid.");
+    t.push(view === "report" && page.widgets.length > 1
+      ? "Now the Power BI magic: **click a column or slice** in one chart and watch every other visual filter. Click the chip under the canvas (or the bar again) to undo."
+      : "Add at least two visuals, then click one — **cross-filtering** is the interaction interviewers ask about.");
+    t.push("Data view = check the grain (one row per what?). Model view = your schema card + the implicit measures Power BI created from your visuals.");
+    return t;
+  }, [view, page.widgets.length]);
+
   /* ---------- save / load ---------- */
   const doSave = () => {
+    coachSay("dashboard", "pbi.save", "Saved the report to your Academy portfolio");
     const name = savedName.trim() || `${ds.name.split(" (")[0]} report`;
     const d: SavedDashboard = {
       id: `dash_${Math.random().toString(36).slice(2, 9)}`,
@@ -576,6 +606,7 @@ export function DashboardTool() {
   };
 
   const exportJSON = () => {
+    coachSay("dashboard", "pbi.save", "Exported the report JSON (every page, visual and theme)");
     downloadFile(
       `${page.name.replace(/\s+/g, "_").toLowerCase()}_report.json`,
       JSON.stringify({ datasetId: dsId, pages, themeIdx }, null, 2),
@@ -602,6 +633,7 @@ export function DashboardTool() {
   const toggleFieldInWells = (colKey: string) => {
     const col = ds.columns.find((c) => c.key === colKey);
     if (!col) return;
+    coachSay("dashboard", "pbi.field", `Toggled the field "${col.name}" in the visual wells`, col.name);
     const isNumeric = col.type === "number" || col.type === "currency";
     if (!selected) {
       addWidget(isNumeric ? "kpi" : "bar");
@@ -776,7 +808,7 @@ export function DashboardTool() {
                   {themeMenu && (
                     <MsMenu width={240}>
                       {THEMES.map((t, i) => (
-                        <button key={t.name} className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-[#252423] hover:bg-[#f3f2f1]" onClick={() => { setThemeIdx(i); setThemeMenu(false); }}>
+                        <button key={t.name} className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-[#252423] hover:bg-[#f3f2f1]" onClick={() => { coachSay("dashboard", "pbi.format", `Applied the "${THEMES[i].name}" report theme — every visual re-colored`); setThemeIdx(i); setThemeMenu(false); }}>
                           {i === themeIdx ? <Check className="h-3.5 w-3.5" /> : <span className="w-3.5" />}
                           <span className="flex gap-0.5">{t.colors.slice(0, 5).map((c) => <span key={c} className="h-3 w-3 rounded-sm" style={{ background: c }} />)}</span>
                           {t.name}
@@ -826,14 +858,14 @@ export function DashboardTool() {
       </div>
 
       {/* ============ main body ============ */}
-      <div className="flex items-start bg-white">
+      <div className="flex items-stretch bg-white">
         {/* left view rail — Power BI style */}
         <div className="flex shrink-0 flex-col items-center gap-1 py-2" style={{ background: MS.surface, borderRight: `1px solid ${MS.border}`, minHeight: "58vh" }} role="tablist" aria-label="View mode">
           {([["report", LayoutDashboard, "Report view"], ["data", Table2, "Data view"], ["model", Link2, "Model view"]] as const).map(([v, Icon, label]) => (
             <TooltipProvider key={v} delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button role="tab" aria-selected={view === v} onClick={() => setView(v)}
+                  <button role="tab" aria-selected={view === v} onClick={() => { if (v !== "report") coachSay("dashboard", "pbi.dataview", v === "data" ? "Inspected the table in Data view" : "Reviewed the model in Model view"); setView(v); }}
                     className="relative flex h-10 w-10 items-center justify-center rounded-[4px] transition-colors"
                     style={{ background: view === v ? "#e0dfdd" : "transparent", color: view === v ? "#252423" : "#605e5c" }}
                     onMouseEnter={(e) => { if (view !== v) e.currentTarget.style.background = MS.hover; }}
@@ -896,8 +928,44 @@ export function DashboardTool() {
                       onDuplicate={() => duplicateWidget(w.id)}
                       onCrossToggle={toggleCrossFilter}
                       onSlicerChange={slicerSet}
+                      onFocus={() => setFocusId(w.id)}
                     />
                   ))}
+                  {/* focus mode — one visual, full page (Power BI's Focus button) */}
+                  {(() => {
+                    const fw = page.widgets.find((x) => x.id === focusId);
+                    if (!fw) return null;
+                    return (
+                      <div className="absolute inset-0 z-50 flex flex-col bg-white p-3" onMouseDown={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-between pb-2">
+                          <p className="text-[13px] font-semibold text-[#252423]">{fw.title}</p>
+                          <button
+                            className="flex items-center gap-1.5 rounded-[3px] border px-2.5 py-1 text-[11.5px] font-semibold text-[#252423] hover:bg-[#f3f2f1]"
+                            style={{ borderColor: MS.border }}
+                            onClick={() => setFocusId(null)}
+                          ><Minimize2 className="h-3.5 w-3.5" /> Back to report</button>
+                        </div>
+                        <div className="min-h-0 flex-1">
+                          <VisualCard
+                            w={{ ...fw, x: 1, y: 1, w: 98, h: 98 }}
+                            ds={ds}
+                            palette={PALETTE}
+                            pageFilters={pageFilters}
+                            cross={crossFilters}
+                            selected
+                            dimmed={false}
+                            onMouseDownHeader={() => {}}
+                            onResizeStart={() => {}}
+                            onSelect={() => {}}
+                            onRemove={() => setFocusId(null)}
+                            onDuplicate={() => {}}
+                            onCrossToggle={toggleCrossFilter}
+                            onSlicerChange={slicerSet}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* cross-filter chips */}
                   {crossFilters.length > 0 && (
                     <div className="absolute bottom-1.5 left-1.5 z-40 flex max-w-[95%] flex-wrap items-center gap-1">
@@ -1186,6 +1254,9 @@ export function DashboardTool() {
             )}
           </div>
         )}
+
+        {/* hand-in-hand live coach — docked like another Power BI pane */}
+        <LiveCoach tool="dashboard" accent="#b58900" office tips={coachTips} />
       </div>
 
       {/* saved dashboards */}
@@ -1254,6 +1325,7 @@ export function DashboardTool() {
               onClick={() => {
                 const { name, expr } = splitMeasureName(measureExpr);
                 saveDaxMeasure(name, expr);
+                coachSay("dashboard", "pbi.measure", `Created the DAX measure [${name}]`, `${name} = ${expr}`);
                 setMeasureDlg(false);
               }}
             >Save measure</button>
@@ -1294,6 +1366,7 @@ export function DashboardTool() {
                   return o;
                 });
                 const newDs: Dataset = { id: `entered_${Date.now().toString(36)}`, name: "Entered Data", description: "A table you typed or pasted via Enter Data.", columns, rows };
+                coachSay("dashboard", "pbi.data", "Created a table with Enter Data", `${rows.length} rows × ${columns.length} columns`);
                 setCustomDs(newDs);
                 setDsId(newDs.id);
                 setEnterDataDlg(false);
@@ -1374,13 +1447,6 @@ export function DashboardTool() {
         </MsBackstage>
       )}
 
-      <Coach view="dashboard" mission={BI_MISSION} tips={[
-        "Free-form canvas: **drag a visual's header** to move it, **drag the bottom-right corner** to resize. “Tidy layout” (View tab) snaps everything back to a clean grid.",
-        view === "report" && page.widgets.length > 1
-          ? "Now the Power BI magic: **click a column or slice** in one chart and watch every other visual filter. Click the chip under the canvas (or the bar again) to undo."
-          : "Add at least two visuals, then click one — **cross-filtering** is the interaction interviewers ask about.",
-        "Data view = check the grain (one row per what?). Model view = your schema card + the implicit measures Power BI created from your visuals.",
-      ].filter(Boolean) as string[]} why="Companies don't buy dashboards — they buy faster decisions. A good report answers the three questions leadership actually asks (how much, trending which way, where) in under 30 seconds, then lets each viewer filter to their own region or product line. That's exactly the interaction model you just built." />
     </div>
   );
 }
@@ -1388,12 +1454,13 @@ export function DashboardTool() {
 /* ================= visual card (Power BI chrome) ================= */
 function VisualCard({
   w, ds, palette, pageFilters, cross, selected, dimmed,
-  onMouseDownHeader, onResizeStart, onSelect, onRemove, onDuplicate, onCrossToggle, onSlicerChange,
+  onMouseDownHeader, onResizeStart, onSelect, onRemove, onDuplicate, onCrossToggle, onSlicerChange, onFocus,
 }: {
   w: Widget; ds: Dataset; palette: string[]; pageFilters: PageFilter[]; cross: CrossFilter[];
   selected: boolean; dimmed: boolean;
   onMouseDownHeader: (e: React.MouseEvent) => void;
   onResizeStart: (e: React.MouseEvent) => void;
+  onFocus?: () => void;
   onSelect: () => void; onRemove: () => void; onDuplicate: () => void;
   onCrossToggle: (col: string, val: string, from: string) => void;
   onSlicerChange: (id: string, field: string, vals: string[]) => void;
@@ -1444,6 +1511,70 @@ function VisualCard({
           <p className="truncate text-xl font-bold tracking-tight text-[#252423]">{fmtVal(total, money)}</p>
           <p className="truncate text-[10px] text-[#605e5c]">{w.agg.toUpperCase()} of {ds.columns.find((c) => c.key === w.measure)?.name}</p>
         </div>
+      );
+    }
+    if (w.type === "kpi2") {
+      const data = [...aggregate(ds, w, pageFilters, cross)].sort((a, b) => b.value - a.value);
+      const total = data.reduce((su, d) => su + d.value, 0);
+      const target = data.length ? total / data.length : 0;
+      const delta = target ? ((total - target * data.length) / Math.max(1, target * data.length)) * 100 : 0;
+      const good = total >= target * Math.max(1, data.length) * 0.98;
+      const spark = data.slice(0, 12).reverse();
+      return (
+        <div className="flex h-full flex-col px-2 pb-1 pt-1.5">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-lg font-bold tracking-tight text-[#252423]">{fmtVal(total, money)}</span>
+            <span className="flex items-center gap-0.5 text-[10.5px] font-bold" style={{ color: good ? "#107c10" : "#d13438" }}>
+              {good ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}%
+            </span>
+          </div>
+          <p className="truncate text-[9.5px] text-[#605e5c]">
+            Target {fmtVal(target * Math.max(1, data.length), money)} · {w.agg.toUpperCase()} of {ds.columns.find((c) => c.key === w.measure)?.name}
+          </p>
+          <div className="mt-auto h-[34%] min-h-[24px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={spark} margin={{ top: 4, right: 2, bottom: 0, left: 2 }}>
+                <Line type="monotone" dataKey="value" stroke={good ? "#107c10" : "#d13438"} strokeWidth={1.8} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      );
+    }
+    if (w.type === "waterfall") {
+      const data = [...aggregate(ds, w, pageFilters, cross)].sort((a, b) => b.value - a.value).slice(0, w.topN || 8);
+      const grand = data.reduce((su, d) => su + d.value, 0);
+      const rows: { name: string; base: number; delta: number; kind: "first" | "pos" | "neg" | "total" }[] = [];
+      let cum = 0;
+      data.forEach((d, i) => {
+        const start = cum;
+        cum += d.value;
+        rows.push({ name: d.label, base: Math.min(start, cum), delta: Math.abs(d.value), kind: i === 0 ? "first" : d.value >= 0 ? "pos" : "neg" });
+      });
+      rows.push({ name: "Total", base: 0, delta: Math.abs(grand), kind: "total" });
+      const colorOf = (k: string) => (k === "first" ? "#118DFF" : k === "pos" ? "#12239E" : k === "neg" ? "#d13438" : "#252423");
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={rows} margin={{ top: 8, right: 8, bottom: f.axisTitles ? 24 : 10, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.10)" vertical={false} />
+            <XAxis dataKey="name" tick={axisTick} interval={0} angle={rows.length > 5 ? -16 : 0} height={rows.length > 5 ? 38 : 18} textAnchor={rows.length > 5 ? "end" : "middle"} />
+            <YAxis tick={axisTick} tickFormatter={fmtNum} width={46} />
+            <RTooltip
+              formatter={(_v: number, _n: string, p: unknown) => {
+                const row = (p as { payload?: { kind?: string; base?: number; delta?: number } })?.payload;
+                if (!row || typeof row.delta !== "number" || typeof row.base !== "number") return "";
+                return row.kind === "total" ? `Total: ${fmtVal(row.delta, money)}` : `${fmtVal(row.delta, money)} (running ${fmtVal(row.base + row.delta, money)})`;
+              }}
+              contentStyle={{ fontSize: 11 }}
+            />
+            {f.legend !== false && <Legend wrapperStyle={{ fontSize: 9.5 }} />}
+            <Bar dataKey="base" stackId="wf" fill="transparent" isAnimationActive={false} />
+            <Bar dataKey="delta" stackId="wf" radius={[2, 2, 0, 0]} cursor="pointer" isAnimationActive={false}
+              onClick={(e: { payload?: { name?: string; kind?: string } }) => { const nm = e?.payload?.name; if (nm && nm !== "Total") onCrossToggle(w.dimension, nm, w.id); }}>
+              {rows.map((row, i) => <Cell key={i} fill={colorOf(row.kind)} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
       );
     }
     if (w.type === "gauge") {
@@ -1685,6 +1816,7 @@ function VisualCard({
           </span>
         )}
         <span className="flex shrink-0 items-center gap-0.5">
+          {onFocus && <button className="rounded p-0.5 text-[#a19f9d] hover:bg-[#f3f2f1] hover:text-[#252423]" title="Focus mode — zoom this visual full screen (like Power BI)" onClick={(e) => { e.stopPropagation(); onFocus(); }}><Maximize2 className="h-2.5 w-2.5" /></button>}
           <button className="rounded p-0.5 text-[#a19f9d] hover:bg-[#f3f2f1] hover:text-[#252423]" title="Duplicate" onClick={(e) => { e.stopPropagation(); onDuplicate(); }}><Copy className="h-2.5 w-2.5" /></button>
           <button className="rounded p-0.5 text-[#a19f9d] hover:bg-[#fdf3f4] hover:text-[#a4262c]" title="Remove" onClick={(e) => { e.stopPropagation(); onRemove(); }}><Trash2 className="h-3 w-3" /></button>
         </span>

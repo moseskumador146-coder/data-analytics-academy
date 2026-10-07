@@ -1,0 +1,486 @@
+     1→"use client";
+     2→
+     3→/* SQL Playground — real in-browser SQL engine (SELECT/JOIN/GROUP BY/HAVING/ORDER BY/CTE),
+     4→   schema browser, results grid with CSV export, query history, quick templates,
+     5→   14 auto-checked exercises and a live Coach. */
+     6→
+     7→import * as React from "react";
+     8→import { Button } from "@/components/ui/button";
+     9→import { Badge } from "@/components/ui/badge";
+    10→import { ToolHeader, PANEL, PANEL_HEAD, DatasetPicker, downloadDatasetCSV } from "./shared";
+    11→import { Coach } from "./Coach";
+    12→import { getSqlTables, getDatasetById, rowsToCSV, downloadFile, type Dataset, type SqlTable, type Row } from "@/lib/academy/datasets";
+    13→import { runSql } from "@/lib/academy/sql-engine";
+    14→import { useAcademy } from "@/lib/academy/store";
+    15→import {
+    16→  BookOpenCheck, CheckCircle2, ChevronRight, Clock, Database, Download, Eye, Play, Plus, Sparkles, Table2, Terminal, Trash2, XCircle,
+    17→} from "lucide-react";
+    18→
+    19→interface Exercise {
+    20→  id: number;
+    21→  title: string;
+    22→  prompt: string;
+    23→  hint: string;
+    24→  solution: string;
+    25→}
+    26→
+    27→const EXERCISES: Exercise[] = [
+    28→  {
+    29→    id: 1, title: "First look", prompt: "Show the name and city of every customer. Limit to 10 rows.",
+    30→    hint: "SELECT picks columns, FROM picks the table, LIMIT caps rows.",
+    31→    solution: "SELECT name, city FROM customers LIMIT 10;",
+    32→  },
+    33→  {
+    34→    id: 2, title: "Filter rows", prompt: "Show all completed orders from June 2025 onwards (order_date >= '2025-06-01'), newest first, limit 15.",
+    35→    hint: "WHERE filters rows before anything else. ORDER BY col DESC sorts newest first.",
+    36→    solution: "SELECT * FROM orders WHERE status = 'completed' AND order_date >= '2025-06-01' ORDER BY order_date DESC LIMIT 15;",
+    37→  },
+    38→  {
+    39→    id: 3, title: "Pattern match", prompt: "Find customers whose name starts with 'A' or live in London.",
+    40→    hint: "LIKE 'A%' matches names starting with A. OR combines conditions.",
+    41→    solution: "SELECT * FROM customers WHERE name LIKE 'A%' OR city = 'London';",
+    42→  },
+    43→  {
+    44→    id: 4, title: "First aggregate", prompt: "Count orders per status, sorted by count descending.",
+    45→    hint: "GROUP BY collapses rows; COUNT(*) counts each group; HAVING filters groups (not needed here).",
+    46→    solution: "SELECT status, COUNT(*) AS orders FROM orders GROUP BY status ORDER BY orders DESC;",
+    47→  },
+    48→  {
+    49→    id: 5, title: "Revenue by month", prompt: "Compute monthly revenue: JOIN order_items to orders, take completed orders, group by month (order_date sliced to 7 chars).",
+    50→    hint: "Line revenue = quantity * unit_price. substr(order_date, 1, 7) gives 'YYYY-MM'. Use UPPER/substr as needed.",
+    51→    solution: "SELECT substr(o.order_date, 1, 7) AS month, SUM(i.quantity * i.unit_price) AS revenue FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.status = 'completed' GROUP BY substr(o.order_date, 1, 7) ORDER BY month;",
+    52→  },
+    53→  {
+    54→    id: 6, title: "HAVING", prompt: "Which customers placed 5 or more orders? Show customer_id and order count.",
+    55→    hint: "WHERE filters rows; HAVING filters groups after aggregation.",
+    56→    solution: "SELECT customer_id, COUNT(*) AS n FROM orders GROUP BY customer_id HAVING COUNT(*) >= 5 ORDER BY n DESC;",
+    57→  },
+    58→  {
+    59→    id: 7, title: "Your first JOIN", prompt: "Show order id, order date and customer name for completed orders. Limit 20.",
+    60→    hint: "JOIN customers c ON o.customer_id = c.id — then both tables' columns are available.",
+    61→    solution: "SELECT o.id AS order_id, o.order_date, c.name FROM orders o JOIN customers c ON o.customer_id = c.id WHERE o.status = 'completed' LIMIT 20;",
+    62→  },
+    63→  {
+    64→    id: 8, title: "Revenue per product", prompt: "Top 10 products by completed revenue: product name + revenue. Two JOINs needed.",
+    65→    hint: "orders → order_items (i.order_id = o.id) → products (p.id = i.product_id). SUM(quantity * unit_price), GROUP BY product name.",
+    66→    solution: "SELECT p.name, SUM(i.quantity * i.unit_price) AS revenue FROM order_items i JOIN orders o ON o.id = i.order_id JOIN products p ON p.id = i.product_id WHERE o.status = 'completed' GROUP BY p.name ORDER BY revenue DESC LIMIT 10;",
+    67→  },
+    68→  {
+    69→    id: 9, title: "LEFT JOIN", prompt: "Which customers never placed an order? Show their name and city.",
+    70→    hint: "LEFT JOIN keeps customers without matches; the orders columns come back empty — test with IS NULL.",
+    71→    solution: "SELECT c.name, c.city FROM customers c LEFT JOIN orders o ON o.customer_id = c.id WHERE o.id IS NULL;",
+    72→  },
+    73→  {
+    74→    id: 10, title: "CTE capstone", prompt: "Top 3 cities by completed revenue using a WITH clause (order the steps: line revenue → join customers → group by city).",
+    75→    hint: "WITH revenue AS (...), city AS (...) SELECT ... — build it step by step and test each CTE alone.",
+    76→    solution: "WITH rev AS (SELECT o.id AS order_id, o.customer_id, i.quantity * i.unit_price AS line_rev FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.status = 'completed'), city_rev AS (SELECT c.city, SUM(r.line_rev) AS revenue FROM rev r JOIN customers c ON c.id = r.customer_id GROUP BY c.city) SELECT * FROM city_rev ORDER BY revenue DESC LIMIT 3;",
+    77→  },
+    78→  {
+    79→    id: 11, title: "CASE WHEN", prompt: "Bucket completed orders by value: '<100' small, '100-1000' medium, '>1000' large (line revenue = quantity × unit_price). Show bucket and order count.",
+    80→    hint: "CASE WHEN x THEN y ELSE z END creates buckets. SUM the line revenue per order first, or bucket each line and count orders via COUNT(DISTINCT o.id).",
+    81→    solution: "SELECT CASE WHEN i.quantity * i.unit_price < 100 THEN '<100' WHEN i.quantity * i.unit_price <= 1000 THEN '100-1000' ELSE '>1000' END AS bucket, COUNT(DISTINCT o.id) AS orders FROM order_items i JOIN orders o ON o.id = i.order_id WHERE o.status = 'completed' GROUP BY bucket ORDER BY orders DESC;",
+    82→  },
+    83→  {
+    84→    id: 12, title: "IN + DISTINCT", prompt: "Which distinct cities do Enterprise-segment customers come from? Sort alphabetically.",
+    85→    hint: "DISTINCT removes duplicates. WHERE segment = 'Enterprise' filters first.",
+    86→    solution: "SELECT DISTINCT city FROM customers WHERE segment = 'Enterprise' ORDER BY city;",
+    87→  },
+    88→  {
+    89→    id: 13, title: "Self JOIN — managers", prompt: "List each employee with their manager's name: e.name AS employee, m.name AS manager. Employees with manager_id NULL get manager NULL.",
+    90→    hint: "JOIN employees m ON e.manager_id = m.id — the same table twice with different aliases.",
+    91→    solution: "SELECT e.name AS employee, m.name AS manager FROM employees e LEFT JOIN employees m ON e.manager_id = m.id ORDER BY employee LIMIT 32;",
+    92→  },
+    93→  {
+    94→    id: 14, title: "Avg order value by segment", prompt: "Completed revenue per customer segment: join orders → customers → order_items, group by segment, show revenue and orders, revenue descending.",
+    95→    hint: "Three tables: orders o, customers c, order_items i. Revenue = SUM(quantity × unit_price), orders = COUNT(DISTINCT o.id).",
+    96→    solution: "SELECT c.segment, SUM(i.quantity * i.unit_price) AS revenue, COUNT(DISTINCT o.id) AS orders FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_items i ON i.order_id = o.id WHERE o.status = 'completed' GROUP BY c.segment ORDER BY revenue DESC;",
+    97→  },
+    98→];
+    99→
+   100→const TEMPLATES: { name: string; sql: string }[] = [
+   101→  { name: "Monthly revenue trend", sql: "SELECT substr(o.order_date, 1, 7) AS month,\n       SUM(i.quantity * i.unit_price) AS revenue\nFROM orders o\nJOIN order_items i ON i.order_id = o.id\nWHERE o.status = 'completed'\nGROUP BY month\nORDER BY month;" },
+   102→  { name: "Top customers by spend", sql: "SELECT c.name, c.segment,\n       SUM(i.quantity * i.unit_price) AS total_spent,\n       COUNT(DISTINCT o.id) AS orders\nFROM customers c\nJOIN orders o ON o.customer_id = c.id\nJOIN order_items i ON i.order_id = o.id\nWHERE o.status = 'completed'\nGROUP BY c.id, c.name, c.segment\nORDER BY total_spent DESC\nLIMIT 10;" },
+   103→  { name: "Products never sold", sql: "SELECT p.name, p.category, p.price\nFROM products p\nLEFT JOIN order_items i ON i.product_id = p.id\nWHERE i.id IS NULL;" },
+   104→  { name: "Avg salary by department", sql: "SELECT dept,\n       COUNT(*) AS headcount,\n       ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;" },
+   105→  { name: "Order status funnel", sql: "SELECT status,\n       COUNT(*) AS orders,\n       ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM orders), 1) AS pct\nFROM orders\nGROUP BY status\nORDER BY orders DESC;" },
+   106→  { name: "Repeat vs one-time buyers", sql: "WITH per_customer AS (\n  SELECT customer_id, COUNT(*) AS n\n  FROM orders\n  WHERE status = 'completed'\n  GROUP BY customer_id\n)\nSELECT CASE WHEN n = 1 THEN 'one-time'\n            WHEN n <= 3 THEN '2-3 orders'\n            ELSE '4+ orders' END AS buyer_type,\n       COUNT(*) AS customers\nFROM per_customer\nGROUP BY buyer_type\nORDER BY customers DESC;" },
+   107→];
+   108→
+   109→const SQL_MISSION = [
+   110→  { id: "explore", label: "Explore the schema", detail: "Click each table in the browser — check columns and row counts, then hit **Preview 10 rows** on `orders`." },
+   111→  { id: "first", label: "Run your first query", detail: "SELECT is the verb of SQL. Try ~ SELECT name, city FROM customers LIMIT 10; ~ and press **Run** (or Ctrl+↵)." },
+   112→  { id: "filter", label: "Filter with WHERE", detail: "Add a condition: ~ WHERE status = 'completed' ~. Combine with AND / OR, sort with ORDER BY." },
+   113→  { id: "group", label: "Aggregate with GROUP BY", detail: "Collapse rows into groups: ~ SELECT status, COUNT(*) FROM orders GROUP BY status; ~" },
+   114→  { id: "join", label: "JOIN two tables", detail: "Relationships live in keys: ~ JOIN customers c ON o.customer_id = c.id ~. Then LEFT JOIN to find customers with no orders." },
+   115→  { id: "import", label: "Query a raw file", detail: "In the schema browser, use **Import a data file as a table** — load *Supplier Deliveries*, then ~ GROUP BY supplier ~. See the case-variant duplicates (AcmeParts vs acmeparts)? That's why cleaning matters." },
+   116→  { id: "exercise", label: "Solve 3 exercises", detail: "Open the practice set and solve **at least exercises 1, 4 and 7** — press Check answer for instant feedback." },
+   117→  { id: "cte", label: "Chain steps with a CTE", detail: "WITH breaks a hard query into named steps. Exercise 10 walks you through a two-CTE capstone." },
+   118→  { id: "export", label: "Export your result", detail: "Run any query and click **Export CSV** — that's how query results become report inputs." },
+   119→];
+   120→
+   121→type RunResult = { columns: string[]; rows: (string | number | null)[][]; ms: number };
+   122→
+   123→/** Convert any sample dataset into a queryable SQL table (types inferred, blanks → NULL) */
+   124→function datasetToSqlTable(ds: Dataset): SqlTable {
+   125→  const columns = ds.columns.map((c) => {
+   126→    let type = "TEXT";
+   127→    if (c.type === "date") type = "DATE";
+   128→    else if (c.type === "number" || c.type === "currency") {
+   129→      const allNum = ds.rows.every((r) => {
+   130→        const v = r[c.key];
+   131→        if (v === null || v === "" || v === undefined) return true;
+   132→        return typeof v === "number" || !isNaN(parseFloat(String(v).replace(/[$,\s]/g, "")));
+   133→      });
+   134→      type = allNum ? "REAL" : "TEXT";
+   135→    }
+   136→    return { name: c.key, type };
+   137→  });
+   138→  const rows: Row[] = ds.rows.slice(0, 4000).map((r) => {
+   139→    const out: Row = {};
+   140→    for (const c of ds.columns) {
+   141→      const v = r[c.key];
+   142→      if (v === "" || v === undefined || v === null) out[c.key] = null;
+   143→      else if (typeof v === "string") {
+   144→        const n = parseFloat(v.replace(/[$,\s]/g, ""));
+   145→        out[c.key] = !isNaN(n) && /^[\d.,$\s+-]+$/.test(v) ? n : v;
+   146→      } else out[c.key] = v;
+   147→    }
+   148→    return out;
+   149→  });
+   150→  return {
+   151→    name: ds.id,
+   152→    description: `${ds.name} — imported sample file (first ${rows.length.toLocaleString()} rows; blanks became NULL, $-text became numbers).`,
+   153→    columns,
+   154→    rows,
+   155→  };
+   156→}
+   157→
+   158→export function SqlTool() {
+   159→  const baseTables = getSqlTables();
+   160→  const { addXp } = useAcademy();
+   161→  const [extraTables, setExtraTables] = React.useState<Record<string, SqlTable>>({});
+   162→  const tables = React.useMemo(() => ({ ...baseTables, ...extraTables }), [extraTables]);
+   163→  const [sql, setSql] = React.useState("SELECT name, city, segment\nFROM customers\nLIMIT 10;");
+   164→  const [result, setResult] = React.useState<RunResult | null>(null);
+   165→  const [error, setError] = React.useState<string | null>(null);
+   166→  const [openTable, setOpenTable] = React.useState<string | null>("customers");
+   167→  const [exOpen, setExOpen] = React.useState(false);
+   168→  const [tplOpen, setTplOpen] = React.useState(false);
+   169→  const [histOpen, setHistOpen] = React.useState(false);
+   170→  const [history, setHistory] = React.useState<string[]>(() => {
+   171→    try { return JSON.parse(localStorage.getItem("aaa-sql-history") ?? "[]"); } catch { return []; }
+   172→  });
+   173→  const [checked, setChecked] = React.useState<Record<number, "pass" | "fail" | null>>({});
+   174→  const [showHint, setShowHint] = React.useState<Record<number, boolean>>({});
+   175→  const [showSolution, setShowSolution] = React.useState<Record<number, boolean>>({});
+   176→
+   177→  const run = (query?: string) => {
+   178→    const q = (query ?? sql).trim();
+   179→    if (!q) return;
+   180→    const t0 = performance.now();
+   181→    try {
+   182→      const res = runSql(q, tables);
+   183→      setResult({ ...res, ms: Math.max(1, Math.round(performance.now() - t0)) });
+   184→      setError(null);
+   185→      setHistory((h) => {
+   186→        const next = [q, ...h.filter((x) => x !== q)].slice(0, 25);
+   187→        try { localStorage.setItem("aaa-sql-history", JSON.stringify(next)); } catch {}
+   188→        return next;
+   189→      });
+   190→    } catch (e) {
+   191→      setError(e instanceof Error ? e.message : String(e));
+   192→      setResult(null);
+   193→    }
+   194→  };
+   195→
+   196→  const check = (ex: Exercise) => {
+   197→    try {
+   198→      const user = runSql(sql, tables);
+   199→      const sol = runSql(ex.solution, tables);
+   200→      const norm = (r: RunResult) =>
+   201→        JSON.stringify([r.columns.map((c) => c.toLowerCase()), r.rows.map((row) => row.map((v) => (v === null ? "" : typeof v === "number" ? +Number(v).toFixed(4) : String(v))))]);
+   202→      const ok = norm(user) === norm(sol);
+   203→      setChecked((c) => ({ ...c, [ex.id]: ok ? "pass" : "fail" }));
+   204→      if (ok && !checked[ex.id]) addXp(15);
+   205→    } catch (e) {
+   206→      setChecked((c) => ({ ...c, [ex.id]: "fail" }));
+   207→      setError(e instanceof Error ? e.message : String(e));
+   208→    }
+   209→  };
+   210→
+   211→  const loadExercise = (ex: Exercise) => {
+   212→    setSql(`-- Exercise ${ex.id}: ${ex.title}\n-- ${ex.prompt}\n\n`);
+   213→    setExOpen(false);
+   214→  };
+   215→
+   216→  const exportResults = () => {
+   217→    if (!result) return;
+   218→    const csv = [
+   219→      result.columns.map((c) => (/[,"]/.test(c) ? `"${c}"` : c)).join(","),
+   220→      ...result.rows.map((r) => r.map((v) => {
+   221→        const s = v === null ? "" : String(v);
+   222→        return /[",]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+   223→      }).join(",")),
+   224→    ].join("\n");
+   225→    downloadFile("query_results.csv", csv, "text/csv");
+   226→  };
+   227→
+   228→  const passedCount = Object.values(checked).filter((v) => v === "pass").length;
+   229→
+   230→  const importTable = (id: string) => {
+   231→    const ds = getDatasetById(id);
+   232→    if (!ds) return;
+   233→    const t = datasetToSqlTable(ds);
+   234→    setExtraTables((prev) => ({ ...prev, [t.name]: t }));
+   235→    setSql(`-- New table: ${t.name} (${t.rows.length.toLocaleString()} rows)
+   236→SELECT * FROM ${t.name} LIMIT 10;`);
+   237→    run(`SELECT * FROM ${t.name} LIMIT 10;`);
+   238→    setOpenTable(t.name);
+   239→  };
+   240→
+   241→  /* dynamic tips */
+   242→  const tips: string[] = React.useMemo(() => {
+   243→    const t: string[] = [];
+   244→    if (!result && !error) t.push("Hit **Run** (or Ctrl+↵) to execute the query. Start small: one table, a few columns, LIMIT 10.");
+   245→    if (result) {
+   246→      t.push(result.rows.length >= 500
+   247→        ? "500+ rows returned — add a LIMIT or aggregate with GROUP BY so the answer is readable."
+   248→        : `${result.rows.length} rows in ${result.ms} ms. Click **Export CSV** to reuse the result in Excel or a dashboard.`);
+   249→    }
+   250→    if (error) t.push("Read the error closely — SQL fails loudly, not silently. Check spelling, commas and the FROM table first.");
+   251→    if (!Object.values(checked).some(Boolean)) t.push("The fastest way to learn: open **Exercises** and do #1, then #4. Check answer gives instant feedback.");
+   252→    return t.slice(0, 3);
+   253→  }, [result, error, checked]);
+   254→
+   255→  return (
+   256→    <div className="space-y-4">
+   257→      <ToolHeader
+   258→        icon={<Database className="h-5 w-5 text-sky-500 dark:text-sky-400" />}
+   259→        title="SQL Playground"
+   260→        subtitle="Real in-browser SQL engine — JOINs, GROUP BY, HAVING, CASE, CTEs. Zero setup, instant results."
+   261→        accent="sky"
+   262→        actions={
+   263→          <>
+   264→            <Button variant="outline" size="sm" className="border-border" onClick={() => setTplOpen(!tplOpen)}>
+   265→              <Sparkles className="h-4 w-4" /> Templates
+   266→            </Button>
+   267→            <Button variant="outline" size="sm" className="border-border" onClick={() => setExOpen(!exOpen)}>
+   268→              <BookOpenCheck className="h-4 w-4" /> Exercises {passedCount}/{EXERCISES.length}
+   269→            </Button>
+   270→          </>
+   271→        }
+   272→      />
+   273→
+   274→      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_1fr]">
+   275→        {/* schema browser */}
+   276→        <div className={`${PANEL} max-h-[70vh] overflow-auto scrollbar-thin`}>
+   277→          <div className={PANEL_HEAD}><span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Database className="h-3.5 w-3.5 text-sky-500" /> Schema · store_db{Object.keys(extraTables).length > 0 ? ` + ${Object.keys(extraTables).length} imported` : ""}</span></div>
+   278→          <div className="p-2">
+   279→            {Object.values(tables).map((t) => (
+   280→              <div key={t.name} className="mb-1 overflow-hidden rounded-lg border border-border/60">
+   281→                <button
+   282→                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-[13px] transition-colors ${openTable === t.name ? "bg-sky-500/10 text-sky-700 dark:text-sky-300" : "text-foreground/85 hover:bg-muted"}`}
+   283→                  onClick={() => setOpenTable(openTable === t.name ? null : t.name)}
+   284→                >
+   285→                  <span className="flex min-w-0 items-center gap-2 font-mono"><Table2 className={`h-3.5 w-3.5 shrink-0 ${extraTables[t.name] ? "text-violet-500" : "text-sky-500"}`} />{t.name}</span>
+   286→                  <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+   287→                    {t.rows.length.toLocaleString()} rows
+   288→                    {extraTables[t.name] && (
+   289→                      <span
+   290→                        role="button"
+   291→                        tabIndex={0}
+   292→                        className="rounded p-0.5 opacity-60 hover:bg-muted hover:text-red-500 hover:opacity-100"
+   293→                        aria-label={`Remove table ${t.name}`}
+   294→                        onClick={(e) => { e.stopPropagation(); setExtraTables((prev) => { const n = { ...prev }; delete n[t.name]; return n; }); }}
+   295→                      ><Trash2 className="h-3 w-3" /></span>
+   296→                    )}
+   297→                    <ChevronRight className={`h-3 w-3 transition-transform ${openTable === t.name ? "rotate-90" : ""}`} />
+   298→                  </span>
+   299→                </button>
+   300→                {openTable === t.name && (
+   301→                  <div className="border-t border-border/60 bg-muted/30 px-3 py-2">
+   302→                    <p className="mb-2 text-[11px] leading-snug text-muted-foreground">{t.description}</p>
+   303→                    <div className="space-y-0.5 font-mono text-[11px]">
+   304→                      {t.columns.map((c) => (
+   305→                        <div key={c.name} className="flex justify-between">
+   306→                          <span className="text-foreground/85">{c.name}</span>
+   307→                          <span className="text-amber-600 dark:text-amber-400/80">{c.type}</span>
+   308→                        </div>
+   309→                      ))}
+   310→                    </div>
+   311→                    <button
+   312→                      className="mt-2 w-full rounded-md border border-border py-1 text-[11px] text-muted-foreground hover:bg-muted"
+   313→                      onClick={() => { setSql(`SELECT * FROM ${t.name} LIMIT 10;`); run(`SELECT * FROM ${t.name} LIMIT 10;`); }}
+   314→                    >
+   315→                      Preview 10 rows
+   316→                    </button>
+   317→                  </div>
+   318→                )}
+   319→              </div>
+   320→            ))}
+   321→            <div className="mt-2 rounded-lg border border-dashed border-border p-2.5">
+   322→              <p className="mb-1.5 flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide text-muted-foreground"><Plus className="h-3 w-3 text-violet-500" /> Import a data file as a table</p>
+   323→              <DatasetPicker onPick={importTable} className="h-7 w-full text-[11px]" />
+   324→              <p className="mt-1.5 text-[10.5px] leading-snug text-muted-foreground">
+   325→                Any sample file becomes queryable SQL — messy ones included. Blanks turn into NULL, $-text into numbers. Try <code className="rounded bg-muted px-1 font-mono">GROUP BY</code> on a messy column to see why cleaning matters.
+   326→              </p>
+   327→            </div>
+   328→            <p className="px-2 pt-2 text-[11px] leading-relaxed text-muted-foreground/80">
+   329→              Relationships: orders.customer_id → customers.id · order_items.order_id → orders.id · order_items.product_id → products.id · employees.manager_id → employees.id
+   330→            </p>
+   331→          </div>
+   332→        </div>
+   333→
+   334→        {/* editor + results */}
+   335→        <div className="space-y-3">
+   336→          <div className={PANEL}>
+   337→            <div className={PANEL_HEAD}>
+   338→              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Terminal className="h-3.5 w-3.5 text-sky-500" /> Query editor</span>
+   339→              <div className="flex items-center gap-1.5">
+   340→                {history.length > 0 && (
+   341→                  <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setHistOpen(!histOpen)}>
+   342→                    <Clock className="h-3 w-3" /> History ({history.length})
+   343→                  </Button>
+   344→                )}
+   345→                <Button size="sm" className="h-7 bg-emerald-500 px-3 text-xs font-semibold text-black hover:bg-emerald-400" onClick={() => run()}>
+   346→                  <Play className="h-3 w-3" /> Run <span className="ml-1 hidden opacity-60 sm:inline">Ctrl+↵</span>
+   347→                </Button>
+   348→              </div>
+   349→            </div>
+   350→            <textarea
+   351→              value={sql}
+   352→              onChange={(e) => setSql(e.target.value)}
+   353→              onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); } }}
+   354→              spellCheck={false}
+   355→              className="code-surface h-44 w-full resize-y p-4 font-mono text-[13px] leading-relaxed text-emerald-900 outline-none scrollbar-thin dark:text-emerald-100/90"
+   356→              placeholder="SELECT * FROM customers LIMIT 10;"
+   357→            />
+   358→            {error && (
+   359→              <div className="border-t border-red-500/20 bg-red-500/10 px-4 py-2 font-mono text-xs text-red-700 dark:text-red-300">⚠ {error}</div>
+   360→            )}
+   361→          </div>
+   362→
+   363→          {/* templates */}
+   364→          {tplOpen && (
+   365→            <div className={`${PANEL} max-h-72 overflow-auto scrollbar-thin`}>
+   366→              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Real-world query templates — load, run, then tweak</span></div>
+   367→              <div className="divide-y divide-border/60">
+   368→                {TEMPLATES.map((t) => (
+   369→                  <div key={t.name} className="flex items-center justify-between gap-3 px-4 py-2.5">
+   370→                    <span className="text-[13px] font-medium text-foreground/90">{t.name}</span>
+   371→                    <div className="flex gap-1.5">
+   372→                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setSql(t.sql)}>Load</Button>
+   373→                      <Button size="sm" variant="outline" className="h-7 border-border px-2 text-xs" onClick={() => run(t.sql)}>Run</Button>
+   374→                    </div>
+   375→                  </div>
+   376→                ))}
+   377→              </div>
+   378→            </div>
+   379→          )}
+   380→
+   381→          {/* history */}
+   382→          {histOpen && history.length > 0 && (
+   383→            <div className={`${PANEL} max-h-60 overflow-auto scrollbar-thin`}>
+   384→              <div className={PANEL_HEAD}>
+   385→                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Query history</span>
+   386→                <button className="text-[11px] text-muted-foreground hover:text-red-500" onClick={() => { setHistory([]); try { localStorage.removeItem("aaa-sql-history"); } catch {} }}>Clear</button>
+   387→              </div>
+   388→              <div className="divide-y divide-border/60">
+   389→                {history.map((q, i) => (
+   390→                  <button key={i} className="block w-full truncate px-4 py-2 text-left font-mono text-[11.5px] text-muted-foreground hover:bg-muted" onClick={() => { setSql(q); setHistOpen(false); }} title={q}>
+   391→                    {q.replaceAll("\n", " ")}
+   392→                  </button>
+   393→                ))}
+   394→              </div>
+   395→            </div>
+   396→          )}
+   397→
+   398→          {/* exercises */}
+   399→          {exOpen && (
+   400→            <div className={`${PANEL} max-h-96 overflow-auto scrollbar-thin`}>
+   401→              <div className={PANEL_HEAD}><span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Practice set — from SELECT to CTEs</span></div>
+   402→              <div className="divide-y divide-border/60">
+   403→                {EXERCISES.map((ex) => (
+   404→                  <div key={ex.id} className="px-4 py-3">
+   405→                    <div className="flex items-start justify-between gap-2">
+   406→                      <div className="min-w-0">
+   407→                        <p className="text-[13px] font-semibold text-foreground">
+   408→                          <span className="mr-2 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-sky-700 dark:text-emerald-300">{ex.id}</span>
+   409→                          {ex.title}
+   410→                        </p>
+   411→                        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{ex.prompt}</p>
+   412→                      </div>
+   413→                      <div className="flex shrink-0 items-center gap-1">
+   414→                        {checked[ex.id] === "pass" && <CheckCircle2 className="h-4 w-4 text-emerald-500" />}
+   415→                        {checked[ex.id] === "fail" && <XCircle className="h-4 w-4 text-red-500" />}
+   416→                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => loadExercise(ex)}>Load</Button>
+   417→                      </div>
+   418→                    </div>
+   419→                    <div className="mt-2 flex flex-wrap items-center gap-2">
+   420→                      <button className="text-[11px] text-amber-600 hover:text-amber-500 dark:text-amber-400/80" onClick={() => setShowHint((h) => ({ ...h, [ex.id]: !h[ex.id] }))}>{showHint[ex.id] ? "Hide hint" : "Hint"}</button>
+   421→                      <button className="text-[11px] text-sky-600 hover:text-sky-500 dark:text-sky-400/80" onClick={() => setShowSolution((s) => ({ ...s, [ex.id]: !s[ex.id] }))}>{showSolution[ex.id] ? "Hide solution" : "Solution"}</button>
+   422→                      <Button size="sm" variant="outline" className="h-6 border-border px-2 text-[11px]" onClick={() => check(ex)}>Check answer</Button>
+   423→                    </div>
+   424→                    {showHint[ex.id] && <p className="mt-1.5 rounded-md bg-amber-500/5 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-200/80">💡 {ex.hint}</p>}
+   425→                    {showSolution[ex.id] && (
+   426→                      <pre className="code-surface mt-1.5 overflow-x-auto rounded-md p-2 font-mono text-[11px] text-sky-800 dark:text-sky-200/80">{ex.solution}</pre>
+   427→                    )}
+   428→                  </div>
+   429→                ))}
+   430→              </div>
+   431→            </div>
+   432→          )}
+   433→
+   434→          {/* results */}
+   435→          {result && (
+   436→            <div className={PANEL}>
+   437→              <div className={PANEL_HEAD}>
+   438→                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Results</span>
+   439→                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+   440→                  <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-300">{result.rows.length} rows</Badge>
+   441→                  <span>{result.ms} ms</span>
+   442→                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[11px]" onClick={exportResults}><Download className="h-3 w-3" /> Export CSV</Button>
+   443→                </div>
+   444→              </div>
+   445→              <div className="max-h-[46vh] overflow-auto scrollbar-thin">
+   446→                <table className="w-full text-left text-[13px]">
+   447→                  <thead className="sticky top-0 bg-card">
+   448→                    <tr>{result.columns.map((c, i) => <th key={i} className="whitespace-nowrap border-b border-border px-3 py-2 font-mono text-[11px] font-semibold text-sky-700 dark:text-emerald-300">{c}</th>)}</tr>
+   449→                  </thead>
+   450→                  <tbody>
+   451→                    {result.rows.slice(0, 500).map((row, ri) => (
+   452→                      <tr key={ri} className="border-b border-border/50 hover:bg-muted/50">
+   453→                        {row.map((v, ci) => (
+   454→                          <td key={ci} className={`whitespace-nowrap px-3 py-1.5 font-mono text-xs ${typeof v === "number" ? "text-right text-foreground" : "text-muted-foreground"}`}>
+   455→                            {v === null || v === "" ? <span className="italic text-muted-foreground/50">NULL</span> : typeof v === "number" ? v.toLocaleString("en-US") : v}
+   456→                          </td>
+   457→                        ))}
+   458→                      </tr>
+   459→                    ))}
+   460→                  </tbody>
+   461→                </table>
+   462→                {result.rows.length > 500 && <p className="px-3 py-2 text-[11px] text-muted-foreground">Showing first 500 rows.</p>}
+   463→              </div>
+   464→            </div>
+   465→          )}
+   466→
+   467→          {/* csv practice files */}
+   468→          <div className={`${PANEL} flex flex-wrap items-center gap-2 px-4 py-2.5 text-xs text-muted-foreground`}>
+   469→            <Eye className="h-3.5 w-3.5" /> Want the raw files instead? Download any sample as CSV:
+   470→            {["clean_sales", "ecom_orders"].map((id) => {
+   471→              const ds = getDatasetById(id)!;
+   472→              return (
+   473→                <button key={id} className="rounded-md border border-border px-2 py-1 text-[11px] hover:bg-muted" onClick={() => downloadDatasetCSV(id)}>
+   474→                  {ds.name.split(" (")[0]} ({ds.rows.length.toLocaleString()} rows)
+   475→                </button>
+   476→              );
+   477→            })}
+   478→          </div>
+   479→        </div>
+   480→      </div>
+   481→
+   482→      <Coach view="sql" accent="sky" mission={SQL_MISSION} tips={tips} why="SQL is the most-requested hard skill in data job postings. Analysts pull their own data instead of waiting on engineering, answer 'how much / how many / why' questions in minutes, and executives trust the numbers because the query is the documentation." />
+   483→    </div>
+   484→  );
+   485→}
+   486→

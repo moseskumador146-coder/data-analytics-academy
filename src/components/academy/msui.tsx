@@ -445,7 +445,7 @@ export function MsBackstage({ color, items, active, onNavigate, onClose, title, 
 /** Segoe-UI-styled select used across both simulators. */
 export function MsSelect({ value, onChange, options, title, width, ariaLabel }: {
   value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
-  title?: string; width?: number; ariaLabel?: string;
+  title?: string; width?: number | string; ariaLabel?: string;
 }) {
   return (
     <select

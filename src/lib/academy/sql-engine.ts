@@ -38,6 +38,14 @@ interface Func {
   type: "func";
   name: string;
   args: Expr[];
+  /** window specification — present when the function is followed by OVER (...) */
+  over?: WindowSpec;
+  /** unique id within a parsed query, used to look up precomputed window values */
+  wid?: number;
+}
+interface WindowSpec {
+  partitionBy: Expr[];
+  orderBy: { expr: Expr; dir: 1 | -1 }[];
 }
 interface Agg {
   type: "agg";
@@ -98,11 +106,15 @@ interface Query {
   having?: Expr;
   orderBy: { expr: Expr; dir: 1 | -1 }[];
   limit?: number;
+  union?: { all: boolean; query: Query };
+  /** trailing ORDER BY / LIMIT after the last UNION arm — applies to the whole combined result */
+  unionOrder?: { expr: Expr; dir: 1 | -1 }[];
+  unionLimit?: number;
 }
 
 /* ---------- lexer ---------- */
 const KW = new Set([
-  "SELECT","FROM","WHERE","GROUP","BY","HAVING","ORDER","LIMIT","JOIN","INNER","LEFT","ON","AS","AND","OR","NOT","IN","LIKE","IS","NULL","BETWEEN","DISTINCT","ASC","DESC","COUNT","SUM","AVG","MIN","MAX","UPPER","LOWER","ROUND","ABS","COALESCE","LENGTH","WITH","SUBSTR","SUBSTRING","TRIM","CAST","CASE","WHEN","THEN","ELSE","END","JULIANDAY","INT","INTEGER","REAL","TEXT","DATE","FLOAT","NUMERIC","VARCHAR",
+  "SELECT","FROM","WHERE","GROUP","BY","HAVING","ORDER","LIMIT","JOIN","INNER","LEFT","ON","AS","AND","OR","NOT","IN","LIKE","IS","NULL","BETWEEN","DISTINCT","ASC","DESC","COUNT","SUM","AVG","MIN","MAX","UPPER","LOWER","ROUND","ABS","COALESCE","LENGTH","WITH","SUBSTR","SUBSTRING","TRIM","CAST","CASE","WHEN","THEN","ELSE","END","JULIANDAY","INT","INTEGER","REAL","TEXT","DATE","FLOAT","NUMERIC","VARCHAR","OVER","PARTITION","ROW_NUMBER","RANK","DENSE_RANK","LAG","LEAD","UNION","ALL",
 ]);
 
 function lex(src: string): Tok[] {
@@ -154,7 +166,9 @@ function lex(src: string): Tok[] {
 /* ---------- parser ---------- */
 class Parser {
   pos = 0;
+  widCounter = 0;
   constructor(private toks: Tok[]) {}
+  nextWid(): number { return ++this.widCounter; }
   peek(): Tok | undefined { return this.toks[this.pos]; }
   next(): Tok { const t = this.toks[this.pos++]; if (!t) throw new Error("Unexpected end of query"); return t; }
   isKw(v: string): boolean { const t = this.peek(); return !!t && t.t === "kw" && t.v === v; }
@@ -176,6 +190,45 @@ class Parser {
         ctes.push({ name: nameTok.v, query: body });
       } while (this.eatOp(","));
     }
+    const q = this.parseSelectBody();
+    q.ctes = ctes;
+
+    // UNION [ALL] chain — left-leaning: q.union → right.union → …
+    if (this.isKw("UNION")) {
+      let cur: Query = q;
+      while (this.eatKw("UNION")) {
+        const all = this.eatKw("ALL");
+        const right = this.parseSelectBody();
+        cur.union = { all, query: right };
+        cur = right;
+      }
+      // trailing ORDER BY / LIMIT apply to the combined result (standard SQL)
+      if (this.eatKw("ORDER")) {
+        this.expectKw("BY");
+        const uo: { expr: Expr; dir: 1 | -1 }[] = [];
+        do {
+          const e = this.parseExpr();
+          let dir: 1 | -1 = 1;
+          if (this.eatKw("DESC")) dir = -1;
+          else this.eatKw("ASC");
+          uo.push({ expr: e, dir });
+        } while (this.eatOp(","));
+        q.unionOrder = uo;
+      }
+      if (this.eatKw("LIMIT")) {
+        const t = this.next();
+        if (t.t !== "num") throw new Error("LIMIT expects a number");
+        q.unionLimit = t.v;
+      }
+    }
+
+    this.eatOp(";");
+    if (strict && this.pos < this.toks.length) throw new Error(`Unexpected token after end of query`);
+    return q;
+  }
+
+  /** One SELECT … FROM … [WHERE] [GROUP BY] [HAVING] [ORDER BY] [LIMIT] — no WITH, no UNION. */
+  parseSelectBody(): Query {
     this.expectKw("SELECT");
     const distinct = this.eatKw("DISTINCT");
     const items: SelectItem[] = [];
@@ -242,9 +295,31 @@ class Parser {
       if (t.t !== "num") throw new Error("LIMIT expects a number");
       limit = t.v;
     }
-    this.eatOp(";");
-    if (strict && this.pos < this.toks.length) throw new Error(`Unexpected token after end of query`);
-    return { ctes, distinct, items, from, fromAlias, joins, where, groupBy, having, orderBy, limit };
+    return { ctes: [], distinct, items, from, fromAlias, joins, where, groupBy, having, orderBy, limit };
+  }
+
+  /** Optional OVER ( [PARTITION BY …] [ORDER BY …] ) after a function call. */
+  parseOverOpt(): WindowSpec | undefined {
+    if (!this.eatKw("OVER")) return undefined;
+    if (!this.eatOp("(")) throw new Error("Expected ( after OVER");
+    const partitionBy: Expr[] = [];
+    if (this.eatKw("PARTITION")) {
+      this.expectKw("BY");
+      do { partitionBy.push(this.parseExpr()); } while (this.eatOp(","));
+    }
+    const orderBy: { expr: Expr; dir: 1 | -1 }[] = [];
+    if (this.eatKw("ORDER")) {
+      this.expectKw("BY");
+      do {
+        const e = this.parseExpr();
+        let dir: 1 | -1 = 1;
+        if (this.eatKw("DESC")) dir = -1;
+        else this.eatKw("ASC");
+        orderBy.push({ expr: e, dir });
+      } while (this.eatOp(","));
+    }
+    if (!this.eatOp(")")) throw new Error("Expected ) to close OVER(...)");
+    return { partitionBy, orderBy };
   }
 
   isKwAny(): boolean { const t = this.peek(); return !!t && t.t === "kw"; }
@@ -335,12 +410,32 @@ class Parser {
     if (t.t === "str") return { type: "str", v: t.v };
     if (t.t === "op" && t.v === "*") return { type: "star" };
     if (t.t === "kw") {
+      // window-only ranking/offset functions — OVER is required
+      if (["ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD"].includes(t.v)) {
+        if (!this.eatOp("(")) throw new Error(`Expected ( after ${t.v}`);
+        const args: Expr[] = [];
+        if (!this.isOp(")")) { do { args.push(this.parseExpr()); } while (this.eatOp(",")); }
+        if (!this.eatOp(")")) throw new Error("Expected )");
+        const over = this.parseOverOpt();
+        if (!over) throw new Error(`${t.v} requires an OVER (…) clause — e.g. ${t.v}(…) OVER (PARTITION BY region ORDER BY amount DESC)`);
+        if ((t.v === "LAG" || t.v === "LEAD") && args.length === 0) throw new Error(`${t.v} needs a column: ${t.v}(order_date, 1)`);
+        const __w = this.nextWid();
+        return { type: "func", name: t.v, args, over, wid: __w };
+      }
       if (["COUNT","SUM","AVG","MIN","MAX"].includes(t.v)) {
         if (!this.eatOp("(")) throw new Error(`Expected ( after ${t.v}`);
         const distinct = this.eatKw("DISTINCT");
-        if (this.isOp("*")) { this.pos++; if (!this.eatOp(")")) throw new Error("Expected )"); return { type: "agg", name: t.v, arg: { type: "star" }, distinct: false }; }
+        if (this.isOp("*")) {
+          this.pos++;
+          if (!this.eatOp(")")) throw new Error("Expected )");
+          const over = this.parseOverOpt();
+          if (over) return { type: "func", name: t.v, args: [], over, wid: this.nextWid() };
+          return { type: "agg", name: t.v, arg: { type: "star" }, distinct: false };
+        }
         const arg = this.parseExpr();
         if (!this.eatOp(")")) throw new Error("Expected )");
+        const over = this.parseOverOpt();
+        if (over) return { type: "func", name: t.v, args: [arg], over, wid: this.nextWid() };
         return { type: "agg", name: t.v, arg, distinct };
       }
       if (["UPPER","LOWER","ROUND","ABS","COALESCE","LENGTH","SUBSTR","SUBSTRING","TRIM"].includes(t.v)) {
@@ -396,6 +491,8 @@ class Parser {
           do { args.push(this.parseExpr()); } while (this.eatOp(","));
           if (!this.eatOp(")")) throw new Error("Expected )");
         }
+        const over = this.parseOverOpt();
+        if (over) return { type: "func", name: t.v.toUpperCase(), args, over, wid: this.nextWid() };
         return { type: "func", name: t.v.toUpperCase(), args };
       }
       return { type: "col", name: t.v, table: t.q };
@@ -426,7 +523,10 @@ function likeMatch(val: CellVal, pattern: string): boolean {
   return rx.test(s);
 }
 
-function evalExpr(e: Expr, env: Env, group?: { tables: string[]; row: Row }[]): CellVal {
+/** Per-row lookup for precomputed window-function values, keyed by the window node's wid. */
+type WinCtx = { row: number; get: (wid: number) => CellVal };
+
+function evalExpr(e: Expr, env: Env, group?: { tables: string[]; row: Row }[], win?: WinCtx): CellVal {
   switch (e.type) {
     case "num": return e.v;
     case "str": return e.v;
@@ -436,10 +536,10 @@ function evalExpr(e: Expr, env: Env, group?: { tables: string[]; row: Row }[]): 
       return found ? value : null;
     }
     case "bin": {
-      if (e.op === "AND") return truthy(evalExpr(e.l, env, group)) && truthy(evalExpr(e.r, env, group)) ? 1 : 0;
-      if (e.op === "OR") return truthy(evalExpr(e.l, env, group)) || truthy(evalExpr(e.r, env, group)) ? 1 : 0;
-      const l = evalExpr(e.l, env, group);
-      const r = evalExpr(e.r, env, group);
+      if (e.op === "AND") return truthy(evalExpr(e.l, env, group, win)) && truthy(evalExpr(e.r, env, group, win)) ? 1 : 0;
+      if (e.op === "OR") return truthy(evalExpr(e.l, env, group, win)) || truthy(evalExpr(e.r, env, group, win)) ? 1 : 0;
+      const l = evalExpr(e.l, env, group, win);
+      const r = evalExpr(e.r, env, group, win);
       switch (e.op) {
         case "+": return num(l) + num(r);
         case "-": return num(l) - num(r);
@@ -455,7 +555,12 @@ function evalExpr(e: Expr, env: Env, group?: { tables: string[]; row: Row }[]): 
       }
     }
     case "func": {
-      const a = e.args.map((x) => evalExpr(x, env, group));
+      // window functions are precomputed for the whole result set — look up this row's value
+      if (e.over) {
+        if (!win) return null; // placeholder during the first evaluation pass
+        return win.get(e.wid ?? -1);
+      }
+      const a = e.args.map((x) => evalExpr(x, env, group, win));
       switch (e.name) {
         case "UPPER": return String(a[0] ?? "").toUpperCase();
         case "LOWER": return String(a[0] ?? "").toLowerCase();
@@ -518,29 +623,29 @@ function evalExpr(e: Expr, env: Env, group?: { tables: string[]; row: Row }[]): 
     }
     case "case": {
       for (const w of e.whens) {
-        if (truthy(evalExpr(w.cond, env, group))) return evalExpr(w.val, env, group);
+        if (truthy(evalExpr(w.cond, env, group, win))) return evalExpr(w.val, env, group, win);
       }
-      return e.else ? evalExpr(e.else, env, group) : null;
+      return e.else ? evalExpr(e.else, env, group, win) : null;
     }
     case "in": {
-      const v = evalExpr(e.e, env, group);
-      const hit = e.list.some((x) => evalExpr(x, env, group) === v);
+      const v = evalExpr(e.e, env, group, win);
+      const hit = e.list.some((x) => evalExpr(x, env, group, win) === v);
       return (e.not ? !hit : hit) ? 1 : 0;
     }
     case "like": {
-      const v = evalExpr(e.e, env, group);
+      const v = evalExpr(e.e, env, group, win);
       const hit = likeMatch(v, e.pattern);
       return (e.not ? !hit : hit) ? 1 : 0;
     }
     case "isnull": {
-      const v = evalExpr(e.e, env, group);
+      const v = evalExpr(e.e, env, group, win);
       const isN = v === null || v === "";
       return (e.not ? !isN : isN) ? 1 : 0;
     }
     case "between": {
-      const v = num(evalExpr(e.e, env, group));
-      const lo = num(evalExpr(e.lo, env, group));
-      const hi = num(evalExpr(e.hi, env, group));
+      const v = num(evalExpr(e.e, env, group, win));
+      const lo = num(evalExpr(e.lo, env, group, win));
+      const hi = num(evalExpr(e.hi, env, group, win));
       const hit = v >= lo && v <= hi;
       return (e.not ? !hit : hit) ? 1 : 0;
     }
@@ -590,18 +695,155 @@ export function runSql(sql: string, tables: Record<string, { rows: Row[] }>): Sq
   // Materialize CTEs in order — each can reference previous ones.
   const scope: Record<string, { rows: Row[] }> = { ...tables };
   for (const cte of q.ctes) {
-    const res = execQuery(cte.query, scope);
+    const res = execTop(cte.query, scope);
     scope[cte.name] = {
       rows: res.rows.map((vals) =>
         Object.fromEntries(res.columns.map((c, i) => [c, vals[i]])) as Row
       ),
     };
   }
-  const result = execQuery(q, scope);
+  const result = execTop(q, scope);
   return { ...result, ms: +(performance.now() - t0).toFixed(1) };
 }
 
-function execQuery(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult {
+/** Executes a query including any UNION chain (window functions live in runSingle). */
+function execTop(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult {
+  const main = runSingle(q, tables);
+  if (!q.union) return main;
+  const columns = main.columns;
+  let rows: CellVal[][] = [...main.rows];
+  let node: Query = q;
+  while (node.union) {
+    const res = runSingle(node.union.query, tables);
+    if (res.columns.length !== columns.length)
+      throw new Error(`UNION needs the same number of columns on both sides — the first SELECT returns ${columns.length}, this one returns ${res.columns.length}`);
+    rows.push(...res.rows);
+    if (!node.union.all) {
+      const seen = new Set<string>();
+      rows = rows.filter((r) => {
+        const k = JSON.stringify(r);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+    node = node.union.query;
+  }
+  // trailing ORDER BY / LIMIT apply to the combined result — by output column name only
+  if (q.unionOrder?.length) {
+    const idxOf = (name: string) => columns.findIndex((c) => c.toLowerCase() === name.toLowerCase());
+    rows.sort((a, b) => {
+      for (const ob of q.unionOrder!) {
+        if (ob.expr.type !== "col") throw new Error("ORDER BY after UNION must name an output column (use the alias)");
+        const idx = idxOf(ob.expr.name);
+        if (idx < 0) throw new Error(`ORDER BY after UNION: '${ob.expr.name}' is not an output column of the first SELECT`);
+        const va = a[idx];
+        const vb = b[idx];
+        const cmp = cmpVals(va, vb);
+        if (cmp !== 0) return cmp * ob.dir;
+      }
+      return 0;
+    });
+  }
+  if (q.unionLimit !== undefined) rows = rows.slice(0, q.unionLimit);
+  return { columns, rows, ms: 0 };
+}
+
+function cmpVals(va: CellVal, vb: CellVal): number {
+  const na = typeof va === "number" || va === null ? num(va) : NaN;
+  const nb = typeof vb === "number" || vb === null ? num(vb) : NaN;
+  if (!isNaN(na) && !isNaN(nb)) return na - nb;
+  return String(va ?? "").localeCompare(String(vb ?? ""));
+}
+
+/* ---------- window functions ---------- */
+
+interface OutRow { vals: CellVal[]; labels: string[]; src: { tables: string[]; row: Row }[] }
+
+function collectWindowNodes(e: Expr, acc: Func[] = []): Func[] {
+  switch (e.type) {
+    case "func":
+      if (e.over) acc.push(e);
+      e.args.forEach((a) => collectWindowNodes(a, acc));
+      break;
+    case "bin": collectWindowNodes(e.l, acc); collectWindowNodes(e.r, acc); break;
+    case "in": collectWindowNodes(e.e, acc); e.list.forEach((x) => collectWindowNodes(x, acc)); break;
+    case "like": collectWindowNodes(e.e, acc); break;
+    case "isnull": collectWindowNodes(e.e, acc); break;
+    case "between": collectWindowNodes(e.e, acc); collectWindowNodes(e.lo, acc); collectWindowNodes(e.hi, acc); break;
+    case "case":
+      e.whens.forEach((w) => { collectWindowNodes(w.cond, acc); collectWindowNodes(w.val, acc); });
+      if (e.else) collectWindowNodes(e.else, acc);
+      break;
+  }
+  return acc;
+}
+
+/** Computes one window function across all output rows → per-row values. */
+function computeWindow(node: Func, outRows: OutRow[]): { wid: number; vals: Map<number, CellVal> } {
+  const spec = node.over!;
+  const name = node.name.toUpperCase();
+  const parts = new Map<string, number[]>();
+  outRows.forEach((r, i) => {
+    const key = spec.partitionBy.map((pe) => String(evalExpr(pe, makeEnv(r.src)) ?? "")).join("\u0001");
+    if (!parts.has(key)) parts.set(key, []);
+    parts.get(key)!.push(i);
+  });
+  const result = new Map<number, CellVal>();
+  for (const idxs of parts.values()) {
+    let sorted = [...idxs];
+    if (spec.orderBy.length) {
+      sorted.sort((ia, ib) => {
+        for (const ob of spec.orderBy) {
+          const va = evalExpr(ob.expr, makeEnv(outRows[ia].src));
+          const vb = evalExpr(ob.expr, makeEnv(outRows[ib].src));
+          const cmp = cmpVals(va, vb);
+          if (cmp !== 0) return cmp * ob.dir;
+        }
+        return ia - ib; // stable for ties
+      });
+    }
+    const envAt = (pos: number) => makeEnv(outRows[sorted[pos]].src);
+    if (name === "ROW_NUMBER") {
+      sorted.forEach((idx, pos) => result.set(idx, pos + 1));
+    } else if (name === "RANK" || name === "DENSE_RANK") {
+      let rank = 0;
+      let dense = 0;
+      let prevKey: string | null = null;
+      sorted.forEach((idx, pos) => {
+        const key = spec.orderBy.map((ob) => `${String(evalExpr(ob.expr, envAt(pos)) ?? "")}|${ob.dir}`).join("\u0001");
+        if (key !== prevKey) {
+          dense++;
+          rank = pos + 1;
+          prevKey = key;
+        }
+        result.set(idx, name === "RANK" ? rank : dense);
+      });
+    } else if (name === "LAG" || name === "LEAD") {
+      const off = node.args[1] ? Math.max(0, Math.round(num(evalExpr(node.args[1], envAt(0))))) : 1;
+      const def = node.args[2] ? evalExpr(node.args[2], envAt(0)) : null;
+      sorted.forEach((idx, pos) => {
+        const at = name === "LAG" ? pos - off : pos + off;
+        result.set(idx, at >= 0 && at < sorted.length ? evalExpr(node.args[0], envAt(at)) : def);
+      });
+    } else if (["SUM", "AVG", "COUNT", "MIN", "MAX"].includes(name)) {
+      const vals = sorted.map((idx) => (node.args.length ? evalExpr(node.args[0], makeEnv(outRows[idx].src)) : 1));
+      const nums = vals.map((v) => num(v));
+      let agg: CellVal;
+      if (name === "COUNT") agg = node.args.length ? vals.filter((v) => v !== null && v !== "").length : sorted.length;
+      else if (name === "SUM") agg = nums.reduce((s, v) => s + v, 0);
+      else if (name === "AVG") agg = nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : null;
+      else if (name === "MIN") agg = nums.length ? Math.min(...nums) : null;
+      else agg = nums.length ? Math.max(...nums) : null;
+      sorted.forEach((idx) => result.set(idx, agg));
+    } else {
+      throw new Error(`Window function ${node.name} isn't supported in this sandbox — try ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, or SUM/AVG/COUNT/MIN/MAX … OVER (…)`);
+    }
+  }
+  return { wid: node.wid ?? 0, vals: result };
+}
+
+function runSingle(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult {
   const fromTable = tables[q.from];
   if (!fromTable) throw new Error(`Table '${q.from}' does not exist`);
 
@@ -658,8 +900,8 @@ function execQuery(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult
       q.items = colSet.map((k) => ({ expr: { type: "col", name: k } as Expr }));
   }
 
-  interface OutRow { vals: CellVal[]; labels: string[]; src: Tagged[] }
-  let outRows: OutRow[] = [];
+  interface LocalOutRow { vals: CellVal[]; labels: string[]; src: Tagged[] }
+  let outRows: LocalOutRow[] = [];
 
   if (grouped) {
     // A bucket = one group = a list of combos (Tagged[]), so the map value is Tagged[][].
@@ -691,6 +933,24 @@ function execQuery(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult
       const labels = q.items.map((it) => labelOf(it.expr, it.alias));
       outRows.push({ vals, labels, src: combo });
     }
+  }
+
+  // window functions: precompute values over the whole result, then substitute per row
+  const winNodes: Func[] = [];
+  for (const it of q.items) collectWindowNodes(it.expr, winNodes);
+  if (winNodes.length) {
+    if (grouped)
+      throw new Error("Window functions can't sit on top of GROUP BY in this sandbox. Put the GROUP BY in a CTE first: WITH t AS (SELECT region, SUM(amount) AS rev FROM orders GROUP BY region) SELECT region, rev, ROW_NUMBER() OVER (ORDER BY rev DESC) AS rn FROM t");
+    const winMaps = winNodes.map((node) => computeWindow(node, outRows as OutRow[]));
+    outRows = outRows.map((r, i) => {
+      const win: WinCtx = {
+        row: i,
+        get: (wid) => winMaps.find((wm) => wm.wid === wid)?.vals.get(i) ?? null,
+      };
+      const env = makeEnv(r.src);
+      const vals = q.items.map((it) => evalExpr(it.expr, env, undefined, win));
+      return { ...r, vals };
+    });
   }
 
   if (q.distinct) {
@@ -728,11 +988,7 @@ function execQuery(q: Query, tables: Record<string, { rows: Row[] }>): SqlResult
           va = evalExpr(ob.expr, makeEnv(a.src), grouped ? a.src : undefined);
           vb = evalExpr(ob.expr, makeEnv(b.src), grouped ? b.src : undefined);
         }
-        const na = typeof va === "number" || va === null ? num(va) : NaN;
-        const nb = typeof vb === "number" || vb === null ? num(vb) : NaN;
-        let cmp: number;
-        if (!isNaN(na) && !isNaN(nb)) cmp = na - nb;
-        else cmp = String(va ?? "").localeCompare(String(vb ?? ""));
+        const cmp = cmpVals(va, vb);
         if (cmp !== 0) return cmp * ob.dir;
       }
       return 0;

@@ -2,16 +2,17 @@
 
 /* SQL Playground — real in-browser SQL engine (SELECT/JOIN/GROUP BY/HAVING/ORDER BY/CTE),
    schema browser, results grid with CSV export, query history, quick templates,
-   14 auto-checked exercises and a live Coach. */
+   16 auto-checked exercises and a live hand-in-hand Coach. */
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ToolHeader, PANEL, PANEL_HEAD, DatasetPicker, downloadDatasetCSV } from "./shared";
-import { Coach } from "./Coach";
 import { getSqlTables, getDatasetById, rowsToCSV, downloadFile, type Dataset, type SqlTable, type Row } from "@/lib/academy/datasets";
 import { runSql } from "@/lib/academy/sql-engine";
 import { useAcademy } from "@/lib/academy/store";
+import { coachSay } from "@/lib/academy/coach-bus";
+import { LiveCoach } from "./LiveCoach";
 import {
   BookOpenCheck, CheckCircle2, ChevronRight, Clock, Database, Download, Eye, Play, Plus, Sparkles, Table2, Terminal, Trash2, XCircle,
 } from "lucide-react";
@@ -95,6 +96,16 @@ const EXERCISES: Exercise[] = [
     hint: "Three tables: orders o, customers c, order_items i. Revenue = SUM(quantity × unit_price), orders = COUNT(DISTINCT o.id).",
     solution: "SELECT c.segment, SUM(i.quantity * i.unit_price) AS revenue, COUNT(DISTINCT o.id) AS orders FROM orders o JOIN customers c ON c.id = o.customer_id JOIN order_items i ON i.order_id = o.id WHERE o.status = 'completed' GROUP BY c.segment ORDER BY revenue DESC;",
   },
+  {
+    id: 15, title: "Rank within a group (window)", prompt: "Number customers by name within each city: name, city, and ROW_NUMBER() OVER (PARTITION BY city ORDER BY name) AS rn — limit 15.",
+    hint: "PARTITION BY defines the groups, ORDER BY inside OVER defines the sequence. The query keeps every row — that's the point.",
+    solution: "SELECT name, city, ROW_NUMBER() OVER (PARTITION BY city ORDER BY name) AS rn FROM customers ORDER BY city, rn LIMIT 15;",
+  },
+  {
+    id: 16, title: "Stack two result sets (UNION)", prompt: "Combine 3 customer names with 3 product names in one column called item_name (UNION ALL), limit 6.",
+    hint: "Both SELECTs must return the same number of columns — column names come from the first SELECT.",
+    solution: "SELECT name AS item_name FROM customers LIMIT 3 UNION ALL SELECT name FROM products LIMIT 3;",
+  },
 ];
 
 const TEMPLATES: { name: string; sql: string }[] = [
@@ -103,22 +114,26 @@ const TEMPLATES: { name: string; sql: string }[] = [
   { name: "Products never sold", sql: "SELECT p.name, p.category, p.price\nFROM products p\nLEFT JOIN order_items i ON i.product_id = p.id\nWHERE i.id IS NULL;" },
   { name: "Avg salary by department", sql: "SELECT dept,\n       COUNT(*) AS headcount,\n       ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;" },
   { name: "Order status funnel", sql: "SELECT status,\n       COUNT(*) AS orders,\n       ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM orders), 1) AS pct\nFROM orders\nGROUP BY status\nORDER BY orders DESC;" },
+  { name: "Rank per group (window fn)", sql: "SELECT name, city,\n       ROW_NUMBER() OVER (PARTITION BY city ORDER BY name) AS rn\nFROM customers\nORDER BY city, rn\nLIMIT 20;" },
+  { name: "Previous month with LAG", sql: "WITH months AS (\n  SELECT substr(order_date, 1, 7) AS month,\n         SUM(total_amount) AS revenue\n  FROM orders\n  GROUP BY month\n)\nSELECT month, revenue,\n       LAG(revenue, 1) OVER (ORDER BY month) AS prev_month\nFROM months\nORDER BY month;" },
   { name: "Repeat vs one-time buyers", sql: "WITH per_customer AS (\n  SELECT customer_id, COUNT(*) AS n\n  FROM orders\n  WHERE status = 'completed'\n  GROUP BY customer_id\n)\nSELECT CASE WHEN n = 1 THEN 'one-time'\n            WHEN n <= 3 THEN '2-3 orders'\n            ELSE '4+ orders' END AS buyer_type,\n       COUNT(*) AS customers\nFROM per_customer\nGROUP BY buyer_type\nORDER BY customers DESC;" },
 ];
 
-const SQL_MISSION = [
-  { id: "explore", label: "Explore the schema", detail: "Click each table in the browser — check columns and row counts, then hit **Preview 10 rows** on `orders`." },
-  { id: "first", label: "Run your first query", detail: "SELECT is the verb of SQL. Try ~ SELECT name, city FROM customers LIMIT 10; ~ and press **Run** (or Ctrl+↵)." },
-  { id: "filter", label: "Filter with WHERE", detail: "Add a condition: ~ WHERE status = 'completed' ~. Combine with AND / OR, sort with ORDER BY." },
-  { id: "group", label: "Aggregate with GROUP BY", detail: "Collapse rows into groups: ~ SELECT status, COUNT(*) FROM orders GROUP BY status; ~" },
-  { id: "join", label: "JOIN two tables", detail: "Relationships live in keys: ~ JOIN customers c ON o.customer_id = c.id ~. Then LEFT JOIN to find customers with no orders." },
-  { id: "import", label: "Query a raw file", detail: "In the schema browser, use **Import a data file as a table** — load *Supplier Deliveries*, then ~ GROUP BY supplier ~. See the case-variant duplicates (AcmeParts vs acmeparts)? That's why cleaning matters." },
-  { id: "exercise", label: "Solve 3 exercises", detail: "Open the practice set and solve **at least exercises 1, 4 and 7** — press Check answer for instant feedback." },
-  { id: "cte", label: "Chain steps with a CTE", detail: "WITH breaks a hard query into named steps. Exercise 10 walks you through a two-CTE capstone." },
-  { id: "export", label: "Export your result", detail: "Run any query and click **Export CSV** — that's how query results become report inputs." },
-];
 
 type RunResult = { columns: string[]; rows: (string | number | null)[][]; ms: number };
+
+/** Which teaching pattern does this query use? Drives the live coach narration. */
+function detectSqlKind(q: string): string {
+  const u = q.toUpperCase();
+  if (/\bROW_NUMBER\s*\(|\bRANK\s*\(|\bDENSE_RANK\s*\(|\bLAG\s*\(|\bLEAD\s*\(|\bOVER\s*\(/.test(u)) return "sql.run.window";
+  if (/\bUNION\b/.test(u)) return "sql.run.union";
+  if (/\bWITH\b/.test(u)) return "sql.run.cte";
+  if (/\bJOIN\b/.test(u)) return "sql.run.join";
+  if (/\bGROUP\s+BY\b/.test(u)) return "sql.run.group";
+  if (/\bWHERE\b/.test(u)) return "sql.run.where";
+  if (/\bORDER\s+BY\b/.test(u)) return "sql.run.order";
+  return "sql.run.select";
+}
 
 /** Convert any sample dataset into a queryable SQL table (types inferred, blanks → NULL) */
 function datasetToSqlTable(ds: Dataset): SqlTable {
@@ -182,6 +197,8 @@ export function SqlTool() {
       const res = runSql(q, tables);
       setResult({ ...res, ms: Math.max(1, Math.round(performance.now() - t0)) });
       setError(null);
+      const kind = detectSqlKind(q);
+      coachSay("sql", kind, kind === "sql.run.window" ? "Ran a window function query" : kind === "sql.run.union" ? "Combined two results with UNION" : kind === "sql.run.cte" ? "Chained steps with a CTE" : kind === "sql.run.join" ? "Joined two tables" : kind === "sql.run.group" ? "Aggregated with GROUP BY" : kind === "sql.run.where" ? "Filtered rows with WHERE" : kind === "sql.run.order" ? "Sorted results with ORDER BY" : "Ran a SELECT query", q.replace(/\s+/g, " ").slice(0, 120));
       setHistory((h) => {
         const next = [q, ...h.filter((x) => x !== q)].slice(0, 25);
         try { localStorage.setItem("aaa-sql-history", JSON.stringify(next)); } catch {}
@@ -190,6 +207,7 @@ export function SqlTool() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setResult(null);
+      coachSay("sql", "sql.run.error", "Query failed with an error", (e instanceof Error ? e.message : String(e)).slice(0, 120));
     }
   };
 
@@ -201,6 +219,7 @@ export function SqlTool() {
         JSON.stringify([r.columns.map((c) => c.toLowerCase()), r.rows.map((row) => row.map((v) => (v === null ? "" : typeof v === "number" ? +Number(v).toFixed(4) : String(v))))]);
       const ok = norm(user) === norm(sol);
       setChecked((c) => ({ ...c, [ex.id]: ok ? "pass" : "fail" }));
+      coachSay("sql", "sql.exercise", ok ? `Exercise ${ex.id} passed — ${ex.title}` : `Exercise ${ex.id} didn't match yet`, ex.title);
       if (ok && !checked[ex.id]) addXp(15);
     } catch (e) {
       setChecked((c) => ({ ...c, [ex.id]: "fail" }));
@@ -215,6 +234,7 @@ export function SqlTool() {
 
   const exportResults = () => {
     if (!result) return;
+    coachSay("sql", "sql.export", `Exported ${result.rows.length.toLocaleString()} result rows as CSV`);
     const csv = [
       result.columns.map((c) => (/[,"]/.test(c) ? `"${c}"` : c)).join(","),
       ...result.rows.map((r) => r.map((v) => {
@@ -232,6 +252,7 @@ export function SqlTool() {
     if (!ds) return;
     const t = datasetToSqlTable(ds);
     setExtraTables((prev) => ({ ...prev, [t.name]: t }));
+    coachSay("sql", "sql.import", `Imported ${ds.name} as the ${t.name} table`, `${t.rows.length.toLocaleString()} rows loaded`);
     setSql(`-- New table: ${t.name} (${t.rows.length.toLocaleString()} rows)
 SELECT * FROM ${t.name} LIMIT 10;`);
     run(`SELECT * FROM ${t.name} LIMIT 10;`);
@@ -253,7 +274,8 @@ SELECT * FROM ${t.name} LIMIT 10;`);
   }, [result, error, checked]);
 
   return (
-    <div className="space-y-4">
+    <div className="flex items-stretch">
+      <div className="min-w-0 flex-1 space-y-4">
       <ToolHeader
         icon={<Database className="h-5 w-5 text-sky-500 dark:text-sky-400" />}
         title="SQL Playground"
@@ -310,7 +332,7 @@ SELECT * FROM ${t.name} LIMIT 10;`);
                     </div>
                     <button
                       className="mt-2 w-full rounded-md border border-border py-1 text-[11px] text-muted-foreground hover:bg-muted"
-                      onClick={() => { setSql(`SELECT * FROM ${t.name} LIMIT 10;`); run(`SELECT * FROM ${t.name} LIMIT 10;`); }}
+                      onClick={() => { coachSay("sql", "sql.preview", `Previewed the ${t.name} table`); setSql(`SELECT * FROM ${t.name} LIMIT 10;`); run(`SELECT * FROM ${t.name} LIMIT 10;`); }}
                     >
                       Preview 10 rows
                     </button>
@@ -369,7 +391,7 @@ SELECT * FROM ${t.name} LIMIT 10;`);
                   <div key={t.name} className="flex items-center justify-between gap-3 px-4 py-2.5">
                     <span className="text-[13px] font-medium text-foreground/90">{t.name}</span>
                     <div className="flex gap-1.5">
-                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setSql(t.sql)}>Load</Button>
+                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => { coachSay("sql", "sql.template", `Loaded the "${t.name}" template`); setSql(t.sql); }}>Load</Button>
                       <Button size="sm" variant="outline" className="h-7 border-border px-2 text-xs" onClick={() => run(t.sql)}>Run</Button>
                     </div>
                   </div>
@@ -478,8 +500,9 @@ SELECT * FROM ${t.name} LIMIT 10;`);
           </div>
         </div>
       </div>
+      </div>
 
-      <Coach view="sql" accent="sky" mission={SQL_MISSION} tips={tips} why="SQL is the most-requested hard skill in data job postings. Analysts pull their own data instead of waiting on engineering, answer 'how much / how many / why' questions in minutes, and executives trust the numbers because the query is the documentation." />
+      <LiveCoach tool="sql" accent="#0284c7" tips={tips} />
     </div>
   );
 }

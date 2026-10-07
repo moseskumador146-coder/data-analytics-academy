@@ -18,6 +18,8 @@ import {
 import { ToolHeader, PANEL, fmtNum, downloadDatasetCSV } from "./shared";
 import { Coach } from "./Coach";
 import { useAcademy } from "@/lib/academy/store";
+import { coachSay } from "@/lib/academy/coach-bus";
+import { LiveCoach } from "./LiveCoach";
 import { getDatasetById, getSampleCatalog, downloadFile, type Row } from "@/lib/academy/datasets";
 import Papa from "papaparse";
 import {
@@ -38,7 +40,7 @@ import {
   MS, SEGOE, MsTitleBar, MsWindowGlyphs, MsAutoSave, MsQatBtn, RibbonTabs, RibbonBody, RGroup, RBig, RSmall, MsTip,
   MsMenu, MsMenuItem, MsSep, MsDialog, MsBackstage, MsSelect, ExcelLogo,
 } from "./msui";
-import { Info, BookOpenText, CircleHelp, GalleryVerticalEnd } from "lucide-react";
+import { Info, BookOpenText, CircleHelp, GalleryVerticalEnd, Grid3x3, MessageSquarePlus } from "lucide-react";
 
 /* ==================================================================
    display + number formats + styles
@@ -72,6 +74,7 @@ interface XSheet {
   freeze: "none" | "top" | "first" | "both";
   cfRules: CfRule[];
   merges?: MergeRect[];
+  comments?: Record<string, string>;
 }
 
 interface CfRule {
@@ -211,16 +214,6 @@ function loadWorkbook(): { sheets: XSheet[]; activeId: string } | null {
 }
 
 /* ================= component ================= */
-const EXCEL_MISSION = [
-  { id: "load", label: "Load a sample file", detail: "Use the **data picker** to load *Retail Sales 2025 (Clean)* — or the 8,000-row *Bank Transactions* for a big-file workout. Or import your own CSV from the Data tab." },
-  { id: "formula", label: "Write your first formula", detail: "Open the **Formulas** ribbon tab and click **SUM** — it drops ~ =SUM(K2:K50) ~ into the active cell. Every formula starts with **=**." },
-  { id: "format", label: "Format like a pro", detail: "On the **Home** tab make the headers **bold**, give them a fill color, and apply a **currency number format** to the revenue column. Real Excel, real ribbon." },
-  { id: "stats", label: "Profile a column", detail: "Click a **column header** (like I) — the stats panel shows sum, mean, median and spread, and the **status bar** underneath tracks Count / Sum / Average of your selection live." },
-  { id: "logic", label: "Use conditional logic", detail: "From the Formulas tab try ~ =SUMIF(D:D,\"North\",I:I) ~, ~ =COUNTIF(I:I,\">500\") ~ or ~ =IF(I2>1000,\"Big\",\"Small\") ~. Drag the **fill handle** to copy it down." },
-  { id: "filter", label: "Filter & chart", detail: "Turn on **AutoFilter** (Data tab), filter one region, then select two columns and use **Insert → charts** to embed a real chart right on the sheet." },
-  { id: "ship", label: "Save & export", detail: "Rename the sheet tab (double-click it), then **Export CSV** from the Data tab for your portfolio. Your workbook auto-saves in this browser." },
-];
-
 export function ExcelTool() {
   const { sheets: savedSheets, saveSheet, deleteSheet } = useAcademy();
   /* workbook state */
@@ -271,6 +264,8 @@ export function ExcelTool() {
   const [wbName, setWbName] = React.useState("Book1");
   const [styleMenu, setStyleMenu] = React.useState(false);
   const [dataMenu, setDataMenu] = React.useState(false);
+  const [pivotDlg, setPivotDlg] = React.useState<{ rowField: number; valField: number; agg: "SUM" | "COUNT" | "AVERAGE"; colField: number | undefined } | null>(null);
+  const [commentDlg, setCommentDlg] = React.useState<{ ref: string; text: string } | null>(null);
   const [helpDlg, setHelpDlg] = React.useState<"keys" | "about" | null>(null);
 
   const gridRef = React.useRef<HTMLDivElement>(null);
@@ -314,6 +309,7 @@ export function ExcelTool() {
   }, [sheets, activeId, sheet]);
 
   const undo = React.useCallback(() => {
+    coachSay("excel", "excel.undo", "Undo");
     const snap = undoRef.current.pop();
     if (!snap) return;
     const cur = JSON.stringify({ sheets, activeId });
@@ -326,6 +322,7 @@ export function ExcelTool() {
   }, [sheets, activeId]);
 
   const redo = React.useCallback(() => {
+    coachSay("excel", "excel.undo", "Redo");
     const snap = redoRef.current.pop();
     if (!snap) return;
     undoRef.current.push(JSON.stringify({ sheets, activeId }));
@@ -353,6 +350,8 @@ export function ExcelTool() {
   const commit = (move: "down" | "right" | "none" = "none") => {
     if (editVal === null) return;
     pushUndo();
+    if (editVal.startsWith("=")) coachSay("excel", "excel.formula", `Entered a formula in ${active}`, editVal);
+    else if (editVal !== "") coachSay("excel", "excel.edit", `Typed a value into ${active}`, editVal);
     setCells((c) => {
       const next = { ...c };
       if (editVal === "") delete next[active];
@@ -533,6 +532,11 @@ export function ExcelTool() {
 
   /* ---------- style ops ---------- */
   const applyStyleToSel = (patch: CellStyle | ((cur: CellStyle | undefined) => CellStyle)) => {
+    if (patch && typeof patch === "object") {
+      const keys = Object.keys(patch);
+      if (keys.length === 1 && keys[0] === "nf") coachSay("excel", "excel.numfmt", "Changed the number format of the selection", String((patch as CellStyle).nf));
+      else coachSay("excel", "excel.format", "Formatted the selection (font / fill / border / alignment)");
+    }
     pushUndo();
     setStyles((st) => {
       const next = { ...st };
@@ -554,6 +558,7 @@ export function ExcelTool() {
   };
 
   const clearFormatSel = () => {
+    coachSay("excel", "excel.clearfmt", "Cleared formatting from the selection");
     pushUndo();
     setStyles((st) => {
       const next = { ...st };
@@ -626,6 +631,7 @@ export function ExcelTool() {
 
   /* ---------- sort / dedupe / transforms (v1 logic, range-aware) ---------- */
   const sortRows = (colIdx: number, dir: 1 | -1) => {
+    coachSay("excel", "excel.sort", `Sorted by column ${colName(colIdx)} ${dir === 1 ? "A\u2192Z" : "Z\u2192A"}`);
     const { rows: R, cols: C } = usedRange(cells);
     if (R < 2) return;
     pushUndo();
@@ -653,6 +659,7 @@ export function ExcelTool() {
   };
 
   const dedupeRows = () => {
+    coachSay("excel", "excel.clean", "Removed duplicate rows");
     const { rows: R, cols: C } = usedRange(cells);
     pushUndo();
     const seen = new Set<string>();
@@ -674,6 +681,7 @@ export function ExcelTool() {
   const selectedColIdx = sel.a[0];
 
   const transformCol = (mode: "trim" | "upper" | "lower" | "title") => {
+    coachSay("excel", "excel.clean", `Cleaned text in column ${colName(selectedColIdx)} (${mode})`);
     pushUndo();
     const col = selectedColIdx;
     setCells((c) => {
@@ -714,6 +722,7 @@ export function ExcelTool() {
   };
 
   const toggleFilterColValue = (col: number, v: string) => {
+    coachSay("excel", "excel.filter", `Filtered column ${colName(col)} (show/hide "${v}")`);
     setHidden((h) => {
       const cur = new Set(h[col] ?? []);
       if (cur.has(v)) cur.delete(v);
@@ -726,6 +735,7 @@ export function ExcelTool() {
 
   /* ---------- freeze panes ---------- */
   const setFreeze = (f: XSheet["freeze"]) => {
+    if (f !== "none") coachSay("excel", "excel.freeze", `Froze ${f === "top" ? "the top row" : f === "first" ? "the first column" : "headers (row + column)"}`);
     updateSheet(sheet.id, { freeze: f });
     setFreezeMenu(false);
   };
@@ -735,6 +745,7 @@ export function ExcelTool() {
 
   const loadDataset = (id: string) => {
     const ds = getDatasetById(id);
+    coachSay("excel", "excel.data", `Loaded sample data into the sheet`, ds?.name ?? id);
     if (!ds) return;
     pushUndo();
     const next: Record<string, string> = {};
@@ -760,6 +771,7 @@ export function ExcelTool() {
   };
 
   const importCSV = (file: File) => {
+    coachSay("excel", "excel.data", "Imported a CSV file into the sheet", file.name);
     Papa.parse<Row>(file, {
       header: false,
       skipEmptyLines: true,
@@ -780,6 +792,7 @@ export function ExcelTool() {
   };
 
   const exportCSV = () => {
+    coachSay("excel", "excel.save", "Exported the sheet as CSV");
     const { rows: R, cols: C } = usedRange(cells);
     const lines: string[] = [];
     for (let r = 0; r < R; r++) {
@@ -795,6 +808,7 @@ export function ExcelTool() {
 
   /* ---------- charts ---------- */
   const insertChart = (kind: ChartBox["kind"]) => {
+    coachSay("excel", "excel.chart", `Inserted a ${kind === "col" ? "column" : kind === "line" ? "line" : "pie"} chart`);
     const { c1, c2, r1, r2 } = nSel;
     let labCol = c1;
     let firstDataRow = r1;
@@ -843,6 +857,7 @@ export function ExcelTool() {
   };
 
   const replaceAll = () => {
+    coachSay("excel", "excel.find", "Replaced text across the sheet (Find & Replace)");
     if (!findDlg || !findDlg.find) return;
     pushUndo();
     let count = 0;
@@ -871,6 +886,7 @@ export function ExcelTool() {
 
   /* ---------- conditional formatting ---------- */
   const addCfRule = (op: CfRule["op"], val: string, bg: string) => {
+    coachSay("excel", "excel.style", `Added conditional formatting (${op === "gt" ? "greater than" : op === "lt" ? "less than" : "contains"} ${val})`);
     if (val === "") return;
     pushUndo();
     updateSheet(sheet.id, (s) => ({ cfRules: [...s.cfRules.slice(-3), { col: selectedColIdx, op, val, bg }] }));
@@ -892,6 +908,7 @@ export function ExcelTool() {
 
   /* ---------- autosum ---------- */
   const autoSum = (fn: "SUM" | "AVERAGE" | "COUNT" | "MAX" | "MIN") => {
+    coachSay("excel", "excel.autosum", `AutoSum — ${fn}`, fn);
     const [c, r] = sel.a;
     let start = r - 1;
     while (start >= 0 && (cells[refFor(c, start)] ?? "") !== "") start--;
@@ -903,6 +920,7 @@ export function ExcelTool() {
 
   /* ---------- sheets (workbook) ---------- */
   const addSheet = () => {
+    coachSay("excel", "excel.sheet", "Added a new worksheet");
     const s = newSheet(`Sheet${sheets.length + 1}`);
     setSheets((ss) => [...ss, s]);
     setActiveId(s.id);
@@ -923,6 +941,7 @@ export function ExcelTool() {
     if (activeId === id) setActiveId(rest[0].id);
   };
   const renameSheet = (id: string) => {
+    coachSay("excel", "excel.sheet", "Renamed a sheet tab");
     const s = sheets.find((x) => x.id === id);
     if (!s) return;
     const nm = window.prompt("Rename sheet", s.name);
@@ -942,6 +961,7 @@ export function ExcelTool() {
   }, [merges]);
 
   const mergeSel = (center = true) => {
+    coachSay("excel", "excel.merge", center ? "Merged & centered the selection" : "Merged the selection");
     const { c1, c2, r1, r2 } = nSel;
     if (c1 === c2 && r1 === r2) { setLoadedInfo("Select more than one cell to merge."); return; }
     pushUndo();
@@ -971,6 +991,7 @@ export function ExcelTool() {
 
   /* ---------- paste special ---------- */
   const pasteSpecial = (mode: "values" | "formats" | "transpose") => {
+    coachSay("excel", "excel.pastespecial", `Paste Special — ${mode}`);
     if (!clipboard) { setLoadedInfo("Copy or cut something first (Ctrl+C)." ); return; }
     const { c1, r1 } = nSel;
     pushUndo();
@@ -1011,6 +1032,7 @@ export function ExcelTool() {
 
   /* ---------- format as table / cell styles ---------- */
   const formatAsTable = () => {
+    coachSay("excel", "excel.table", "Formatted the range as a Table (banded rows + filters)");
     const { rows: R, cols: C } = usedRange(cells);
     if (R < 1) { setLoadedInfo("Nothing to format — load data first."); return; }
     pushUndo();
@@ -1028,6 +1050,7 @@ export function ExcelTool() {
   };
 
   const applyPreset = (p: "good" | "bad" | "neutral" | "heading" | "total") => {
+    coachSay("excel", "excel.style", `Applied the "${p}" cell style`);
     const presets: Record<string, CellStyle> = {
       good: { bg: "#C6EFCE", fc: "#006100" },
       bad: { bg: "#FFC7CE", fc: "#9C0006" },
@@ -1043,7 +1066,106 @@ export function ExcelTool() {
     applyStyleToSel({ dec: Math.max(0, Math.min(6, cur + delta)) });
   };
 
+  /* ---------- PivotTable: group the data and write a summary sheet ---------- */
+  const openPivot = () => {
+    const headers = Array.from({ length: usedC }, (_, c) => displayValue(refFor(c, 0), cells, styles) || colName(c));
+    const isNumCol = (c: number) => {
+      for (let r = 1; r < Math.min(usedR, 60); r++) {
+        const raw = String(cells[refFor(c, r)] ?? "").trim();
+        if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return false; // dates are not values
+        if (raw !== "" && /^[\d.,$\s+-]+$/.test(raw) && !isNaN(parseFloat(raw.replace(/[$,\s]/g, "")))) return true;
+      }
+      return false;
+    };
+    const firstNumeric = headers.findIndex((_, c) => isNumCol(c));
+    setPivotDlg({ rowField: 0, valField: firstNumeric >= 0 ? firstNumeric : 0, agg: "SUM", colField: undefined });
+  };
+
+  const insertPivot = (cfg: { rowField: number; valField: number; agg: "SUM" | "COUNT" | "AVERAGE"; colField: number | undefined }) => {
+    const { rowField, valField, agg, colField } = cfg;
+    const groups = new Map<string, Map<string, number[]>>();
+    for (let r = 1; r < usedR; r++) {
+      const rk = String(displayValue(refFor(rowField, r), cells, styles) ?? "").trim() || "(blank)";
+      const ck = colField === undefined ? "" : String(displayValue(refFor(colField, r), cells, styles) ?? "").trim() || "(blank)";
+      const raw = String(cells[refFor(valField, r)] ?? "");
+      if (agg === "COUNT") {
+        if (raw === "") continue;
+        if (!groups.has(rk)) groups.set(rk, new Map());
+        const m = groups.get(rk)!;
+        if (!m.has(ck)) m.set(ck, []);
+        m.get(ck)!.push(1);
+      } else {
+        const n = parseFloat(raw.replace(/[$,\s]/g, ""));
+        if (raw === "" || isNaN(n)) continue;
+        if (!groups.has(rk)) groups.set(rk, new Map());
+        const m = groups.get(rk)!;
+        if (!m.has(ck)) m.set(ck, []);
+        m.get(ck)!.push(n);
+      }
+    }
+    if (!groups.size) {
+      const vh = displayValue(refFor(valField, 0), cells, styles) || colName(valField);
+      setLoadedInfo(agg === "COUNT"
+        ? "PivotTable: no data rows found — load a dataset first."
+        : `PivotTable: "${vh}" has no numbers in it — pick a numeric column to aggregate (Revenue, Units…), or switch to Count.`);
+      return;
+    }
+    const aggOf = (vals: number[]) => (agg === "COUNT" ? vals.length : agg === "SUM" ? vals.reduce((a, b) => a + b, 0) : vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0);
+    const rowKeys = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+    const colKeys = colField === undefined ? [""] : [...new Set(rowKeys.flatMap((rk) => [...groups.get(rk)!.keys()]))].sort((a, b) => a.localeCompare(b));
+    const rowHeader = displayValue(refFor(rowField, 0), cells, styles) || colName(rowField);
+    const valHeader = displayValue(refFor(valField, 0), cells, styles) || colName(valField);
+    const ns = newSheet(`Pivot${sheets.length + 1}`);
+    const put = (col: number, row: number, v: string, bold = false) => {
+      const ref = refFor(col, row - 1);
+      ns.cells[ref] = v;
+      if (bold) ns.styles[ref] = { b: true, bg: "#e2efda" };
+    };
+    put(0, 1, `PivotTable — ${agg === "COUNT" ? "Count" : agg} of ${valHeader} by ${rowHeader}`, true);
+    let rr = 3;
+    put(0, rr, rowHeader, true);
+    colKeys.forEach((ck, ci) => put(1 + ci, rr, colField === undefined ? `${agg === "COUNT" ? "Count" : agg} of ${valHeader}` : ck, true));
+    for (const rk of rowKeys) {
+      rr++;
+      put(0, rr, rk);
+      colKeys.forEach((ck, ci) => {
+        const v = +aggOf(groups.get(rk)?.get(ck) ?? []).toFixed(2);
+        const ref = refFor(1 + ci, rr - 1);
+        ns.cells[ref] = String(v);
+        ns.styles[ref] = { nf: "number", dec: 2 };
+      });
+    }
+    rr++;
+    put(0, rr, "Grand Total", true);
+    colKeys.forEach((ck, ci) => {
+      let all: number[] = [];
+      for (const rk of rowKeys) all.push(...(groups.get(rk)?.get(ck) ?? []));
+      const ref = refFor(1 + ci, rr - 1);
+      ns.cells[ref] = String(+aggOf(all).toFixed(2));
+      ns.styles[ref] = { nf: "number", dec: 2, b: true };
+    });
+    setSheets((ss) => [...ss, ns]);
+    setActiveId(ns.id);
+    setPivotDlg(null);
+    coachSay("excel", "excel.pivot", `Inserted a PivotTable (${agg === "COUNT" ? "Count" : agg} of ${valHeader} by ${rowHeader}) — ${rowKeys.length} groups`);
+  };
+
+  /* ---------- comments (Review tab) ---------- */
+  const saveComment = () => {
+    if (!commentDlg) return;
+    const { ref, text } = commentDlg;
+    updateSheet(sheet.id, (sh) => {
+      const next = { ...(sh.comments ?? {}) };
+      if (text.trim()) next[ref] = text.trim();
+      else delete next[ref];
+      return { comments: next };
+    });
+    if (text.trim()) coachSay("excel", "excel.comment", `Added a comment on cell ${ref}`);
+    setCommentDlg(null);
+  };
+
   const exportWorkbookJSON = () => {
+    coachSay("excel", "excel.save", "Saved the workbook as JSON (all sheets, formulas and formats)");
     downloadFile(`${wbName || "workbook"}.excel.json`, JSON.stringify({ app: "data-analytics-academy-excel", name: wbName, sheets, activeId }, null, 2), "application/json");
   };
 
@@ -1446,6 +1568,7 @@ export function ExcelTool() {
               </RGroup>
               <RGroup label="Tables">
                 <RBig title="Format the used range as a table (header + banded rows)" onClick={formatAsTable} label="Table"><Table2 className="h-5 w-5" /></RBig>
+                <RBig title="PivotTable — group rows by a field and sum/average/count a value column onto a new sheet" onClick={openPivot} label="PivotTable"><Grid3x3 className="h-5 w-5" /></RBig>
               </RGroup>
               <RGroup label="Text" last>
                 <RBig title="Wrap text in the selection" onClick={() => applyStyleToSel({ wr: !activeStyle?.wr })} label="Wrap Text"><WrapText className="h-5 w-5" /></RBig>
@@ -1593,6 +1716,14 @@ export function ExcelTool() {
                   label="Check Errors"
                 ><SpellCheck2 className="h-5 w-5" /></RBig>
               </RGroup>
+              <RGroup label="Comments">
+                <RBig
+                  title="Add a comment to the active cell — leave a note about why this number matters"
+                  onClick={() => setCommentDlg({ ref: active, text: sheet.comments?.[active] ?? "" })}
+                  label="New Comment"
+                ><MessageSquarePlus className="h-5 w-5" /></RBig>
+                <span className="self-center px-2 text-[11px] text-[#605e5c]">{Object.keys(sheet.comments ?? {}).length} on this sheet</span>
+              </RGroup>
               <RGroup label="Workbook Statistics" last>
                 <div className="self-center px-2 text-[11px] leading-relaxed text-[#605e5c]">
                   {usedR - 1} data rows · {usedC} columns · <b>{formulaCount}</b> formulas · {Object.keys(styles).length} formatted cells · {sheets.length} sheet{sheets.length === 1 ? "" : "s"}
@@ -1650,8 +1781,9 @@ export function ExcelTool() {
         </RibbonBody>
       </div>
 
-      {/* ============ grid + charts ============ */}
-      <div className="flex flex-col gap-3 p-2 lg:flex-row" style={{ background: "#fff" }}>
+      {/* ============ work area + live coach dock ============ */}
+      <div className="flex items-stretch">
+        <div className="flex min-w-0 flex-1 flex-col gap-3 p-2 lg:flex-row" style={{ background: "#fff" }}>
         <div className="flex min-w-0 flex-1 flex-col">
           <div
             ref={gridRef}
@@ -1801,6 +1933,12 @@ export function ExcelTool() {
                               />
                             ) : (
                               <span>{shown}</span>
+                            )}
+                            {sheet.comments?.[refFor(c, r)] && (
+                              <span
+                                className="pointer-events-none absolute right-0 top-0 border-t-[8px] border-t-[#a4262c] border-l-[8px] border-l-transparent"
+                                title={`Comment: ${sheet.comments[refFor(c, r)]}`}
+                              />
                             )}
                             {isFormula && shown.startsWith("#") && <span className="absolute left-0.5 top-0.5 h-1 w-1 rounded-full bg-[#a4262c]" />}
                             {isFormula && !shown.startsWith("#") && <span className="absolute left-0.5 top-0.5 h-1 w-1 rounded-full bg-[#0ea5e9]/70" />}
@@ -2013,6 +2151,9 @@ export function ExcelTool() {
             </div>
           </div>
         </div>
+        </div>
+
+        <LiveCoach tool="excel" accent={MS.excelGreen} office tips={tips} />
       </div>
 
       {/* ============ autofilter panel (dialog-style) ============ */}
@@ -2303,7 +2444,77 @@ export function ExcelTool() {
         </MsBackstage>
       )}
 
-      <Coach view="excel" mission={EXCEL_MISSION} tips={tips} why="Excel is still the #1 tool analysts touch daily. Companies test formula fluency in interviews (SUMIFs, VLOOKUP, IF) because cleaned, well-structured sheets are how estimates, budgets and one-off analyses actually get done — before anything reaches Power BI." />
+      {pivotDlg && (
+        <MsDialog title="PivotTable — build a summary" onClose={() => setPivotDlg(null)} width={430}>
+          <p className="mb-3 text-[12px] leading-relaxed text-[#605e5c]">
+            Group every data row by a field, then aggregate a value column — the summary lands on a new sheet. This is Excel&apos;s most powerful reporting tool: no formulas needed.
+          </p>
+          {(() => {
+              const headers = Array.from({ length: usedC }, (_, c) => displayValue(refFor(c, 0), cells, styles) || colName(c));
+              const fieldOpts = headers.map((h, c) => ({ value: String(c), label: h }));
+              const numericOpts = fieldOpts.filter(({ value }) => {
+                const c = +value;
+                for (let r = 1; r < Math.min(usedR, 60); r++) {
+                  const raw = String(cells[refFor(c, r)] ?? "").trim();
+                  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return false; // dates are not values
+                  if (raw !== "" && /^[\d.,$\s+-]+$/.test(raw) && !isNaN(parseFloat(raw.replace(/[$,\s]/g, "")))) return true;
+                }
+                return false;
+              });
+              return (
+            <div className="space-y-2.5">
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Rows — group by</span>
+                <MsSelect value={String(pivotDlg.rowField)} onChange={(v) => setPivotDlg({ ...pivotDlg, rowField: +v })} options={fieldOpts} ariaLabel="Rows field" width="100%" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Values — aggregate</span>
+                <MsSelect value={String(pivotDlg.valField)} onChange={(v) => setPivotDlg({ ...pivotDlg, valField: +v })} options={numericOpts.length ? numericOpts : fieldOpts} ariaLabel="Values field" width="100%" />
+              </label>
+              <div className="flex gap-2">
+                <label className="flex-1">
+                  <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Aggregate</span>
+                  <MsSelect value={pivotDlg.agg} onChange={(v) => setPivotDlg({ ...pivotDlg, agg: v as "SUM" | "COUNT" | "AVERAGE" })} options={[{ value: "SUM", label: "Sum" }, { value: "COUNT", label: "Count" }, { value: "AVERAGE", label: "Average" }]} ariaLabel="Aggregation" width="100%" />
+                </label>
+                <label className="flex-1">
+                  <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Columns (optional)</span>
+                  <MsSelect value={pivotDlg.colField === undefined ? "none" : String(pivotDlg.colField)} onChange={(v) => setPivotDlg({ ...pivotDlg, colField: v === "none" ? undefined : +v })} options={[{ value: "none", label: "None" }, ...fieldOpts]} ariaLabel="Columns field" width="100%" />
+                </label>
+              </div>
+            </div>
+              );
+            })()}
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setPivotDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => insertPivot(pivotDlg)}>Insert PivotTable</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {commentDlg && (
+        <MsDialog title={`Comment — cell ${commentDlg.ref}`} onClose={() => setCommentDlg(null)} width={380}>
+          <textarea
+            autoFocus
+            value={commentDlg.text}
+            onChange={(e) => setCommentDlg({ ...commentDlg, text: e.target.value })}
+            rows={4}
+            placeholder="Why does this number matter? Where is it from? What did you check?"
+            className="w-full resize-none rounded-[3px] border border-[#d2d0ce] p-2.5 text-[13px] outline-none focus:border-[#217346]"
+          />
+          <p className="mt-1.5 text-[11px] text-[#605e5c]">Comments show as a red triangle on the cell — hover to read. Real teams review sheets through these notes.</p>
+          <div className="mt-4 flex justify-end gap-2">
+            {sheet.comments?.[commentDlg.ref] && (
+              <button
+                className="mr-auto rounded-[3px] border border-[#d2d0ce] px-3 py-1.5 text-[12.5px] text-[#a4262c] hover:bg-[#fdf3f4]"
+                onClick={() => { setCommentDlg({ ...commentDlg, text: "" }); setTimeout(() => { updateSheet(sheet.id, (sh) => { const n = { ...(sh.comments ?? {}) }; delete n[commentDlg.ref]; return { comments: n }; }); setCommentDlg(null); }, 0); }}
+              >Delete comment</button>
+            )}
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setCommentDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={saveComment}>Save comment</button>
+          </div>
+        </MsDialog>
+      )}
+
     </div>
   );
 }
