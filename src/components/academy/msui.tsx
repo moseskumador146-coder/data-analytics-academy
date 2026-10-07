@@ -338,11 +338,23 @@ export function MSep() {
 
 /* ================= menus & dialogs ================= */
 
-export function MsMenu({ children, align = "right", width }: { children: React.ReactNode; align?: "left" | "right"; width?: number }) {
+export function MsMenu({ children, align = "right", width, maxHeight }: { children: React.ReactNode; align?: "left" | "right"; width?: number; maxHeight?: number }) {
+  /* Auto-flip: if the menu would leave the browser window (the classic "Get Data
+     flies off-screen" bug), flip the anchor side and clamp to the viewport. */
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [side, setSide] = React.useState<"left" | "right">(align);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.left < 8) setSide("left");
+    else if (r.right > window.innerWidth - 8) setSide("right");
+  }, []);
   return (
     <div
-      className="absolute top-full z-40 mt-[3px] rounded-[4px] border border-[#e1dfdd] bg-white py-1 shadow-[0_8px_24px_rgba(0,0,0,0.20)]"
-      style={{ [align]: 0, minWidth: width ?? 200 } as React.CSSProperties}
+      ref={ref}
+      className="absolute top-full z-40 mt-[3px] overflow-y-auto overscroll-contain rounded-[4px] border border-[#e1dfdd] bg-white py-1 shadow-[0_8px_24px_rgba(0,0,0,0.20)] scrollbar-thin"
+      style={{ [side]: 0, minWidth: width ?? 200, maxWidth: "min(92vw, 420px)", maxHeight: maxHeight ?? "min(560px, 62vh)" } as React.CSSProperties}
     >
       {children}
     </div>
@@ -379,15 +391,16 @@ export function MsTip({ title, children }: { title: string; children: React.Reac
   );
 }
 
-/** Fluent dialog: white sheet, subtle border, title strip with close glyph. */
+/** Fluent dialog: white sheet, subtle border, title strip with close glyph.
+    Width is responsive: never wider than the viewport (small screens included). */
 export function MsDialog({ title, onClose, children, width = 460 }: {
   title: string; onClose: () => void; children: React.ReactNode; width?: number;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 pt-[10vh]" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 px-3 py-[4vh]" onMouseDown={onClose}>
       <div
-        className="max-h-[76vh] overflow-auto rounded-[8px] border border-[#e1dfdd] bg-white shadow-[0_16px_48px_rgba(0,0,0,0.30)]"
-        style={{ width }}
+        className="my-auto max-h-[88vh] overflow-auto overscroll-contain rounded-[8px] border border-[#e1dfdd] bg-white shadow-[0_16px_48px_rgba(0,0,0,0.30)]"
+        style={{ width: "100%", maxWidth: width }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 flex items-center justify-between border-b border-[#edebe9] bg-white px-4 py-2.5">

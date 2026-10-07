@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { ToolHeader, PANEL, PANEL_HEAD, DatasetPicker, downloadDatasetCSV } from "./shared";
 import { getSqlTables, getDatasetById, rowsToCSV, downloadFile, type Dataset, type SqlTable, type Row } from "@/lib/academy/datasets";
 import { runSql } from "@/lib/academy/sql-engine";
+import { type DoctorSnapshot } from "@/lib/academy/data-doctor";
 import { useAcademy } from "@/lib/academy/store";
 import { coachSay } from "@/lib/academy/coach-bus";
 import { LiveCoach } from "./LiveCoach";
@@ -259,6 +260,19 @@ SELECT * FROM ${t.name} LIMIT 10;`);
     setOpenTable(t.name);
   };
 
+  /* Data Doctor — profile the table open in the schema browser */
+  const doctorTable = openTable ? tables[openTable] : null;
+  const doctorSnapshot = React.useMemo<DoctorSnapshot | null>(() => {
+    if (!doctorTable || !doctorTable.columns.length) return null;
+    const headers = doctorTable.columns.map((c) => c.name);
+    const rows = doctorTable.rows.map((r) => {
+      const o: Record<string, string> = {};
+      headers.forEach((h) => { o[h] = String(r[h] ?? ""); });
+      return o;
+    });
+    return { source: "sql", file: doctorTable.name, headers, rows };
+  }, [doctorTable]);
+
   /* dynamic tips */
   const tips: string[] = React.useMemo(() => {
     const t: string[] = [];
@@ -502,7 +516,17 @@ SELECT * FROM ${t.name} LIMIT 10;`);
       </div>
       </div>
 
-      <LiveCoach tool="sql" accent="#0284c7" tips={tips} />
+      <LiveCoach
+        tool="sql"
+        accent="#0284c7"
+        tips={tips}
+        doctor={{
+          snapshot: doctorSnapshot,
+          canFix: false,
+          fixLabel: "SQL",
+          emptyHint: "Open a table in the schema browser (or import a CSV as a table) — I profile that exact table and write the cleaning queries for ITS problems, ready to copy and run.",
+        }}
+      />
     </div>
   );
 }

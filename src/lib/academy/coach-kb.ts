@@ -152,6 +152,78 @@ const EXCEL_KB: KB = {
     why: "Starting from a clean grid prevents inherited colors and formats from confusing the next person — data teams do this before every serious rebuild.",
     next: "Re-apply just the essentials: bold headers, one number format per column.",
   },
+  "excel.multisort": {
+    did: "You ran a multi-level Sort.",
+    why: "One sort key is often ambiguous — sort by Region A→Z and dates shuffle randomly inside each region. Levels fix that: Region first, then Date newest-first. Real reports are sorted by *multiple* keys, and the Sort dialog is where that happens.",
+    watch: "Sorting rearranges ENTIRE rows — but only if every row is one solid block. A blank column or row in the middle makes Excel sort only part of the data and corrupts the table.",
+    next: "After sorting, scan the first ~10 rows: do the groups read in order? That 5-second check catches broken sorts before anyone else does.",
+  },
+  "excel.ttc": {
+    did: "You used Text to Columns.",
+    why: "One column holding 'Austin, TX' or 'LAST-FIRST' is really two facts wearing a trench coat. Text to Columns splits it into real columns so you can filter, group and count each part — a top-3 data-cleaning move in every analyst's week.",
+    watch: "It overwrites columns to the right without asking (here it inserts new ones instead). A quick Ctrl+Z is always available.",
+    next: "The Data Doctor's scan will confirm the split — and if any split values picked up extra spaces, run Trim on the new columns.",
+  },
+  "excel.flash": {
+    did: "You used Flash Fill.",
+    why: "Flash Fill learns a pattern from ONE example and fills the rest: names from emails, codes from IDs, initials from full names. It's pattern-magic — Ctrl+E in real Excel — and it saves hours on messy exports.",
+    watch: "It's only as right as your example. Scan a handful of filled cells before trusting the column — unusual rows (double surnames, middle names) break the pattern.",
+    next: "Spot-check five filled cells now. If one is wrong, fix your example and run Flash Fill again.",
+  },
+  "excel.validate": {
+    did: "You set a Data Validation rule.",
+    why: "Validation is a bouncer at the door: only whole numbers 1–100, or only values from an approved list, get into the column. Companies use it so a typo like '10O' instead of '100' never poisons the data — prevention beats cleaning.",
+    watch: "Validation only guards NEW entries (and Circle Invalid checks existing ones). Rows pasted in later can bypass it — re-run Circle Invalid after pastes.",
+    next: "Try typing a breaking value — Excel refuses it, exactly like the real product. That's the rule working.",
+  },
+  "excel.consolidate": {
+    did: "You consolidated data with an aggregate.",
+    why: "Consolidation turns 300 detail rows into one line per key: total revenue per region, average score per product. This is the arithmetic behind every summary table and management report ever emailed.",
+    watch: "Keys must match EXACTLY — 'North ' with a space and 'North' become two groups. Run the doctor's Trim fix first if the groups look split.",
+    next: "Compare a couple of groups by hand (SUMIF the same key) — if the numbers agree, your summary is audit-proof.",
+  },
+  "excel.subtotal": {
+    did: "You inserted subtotals per group.",
+    why: "Managers read subtotal rows, not detail. Sorting into groups and dropping a subtotal after each one — with a grand total at the end — is the classic finance layout for invoices, expense claims and sales packs.",
+    watch: "Subtotal rows are REAL rows now: exclude them from your ranges (or use SUBTOTAL(109,…) which ignores other subtotals) or you'll double-count.",
+    next: "Sort first, subtotal second — if you subtotal unsorted data you get many one-row groups, which is the #1 beginner mistake here.",
+  },
+  "excel.goalseek": {
+    did: "You ran Goal Seek.",
+    why: "Goal Seek answers the question managers actually ask: *'what would revenue have to be to hit 50,000?'* — it back-solves one input to make a formula hit a target. It's what-if analysis, the finance-team superpower.",
+    watch: "It changes the input cell to a number — your original value is replaced (Ctrl+Z restores it). The formula must depend on that one cell.",
+    next: "Try it on a profit model: set Profit to a target by changing Price. Watch how sensitive profit is to price — that's insight, not just arithmetic.",
+  },
+  "excel.group": {
+    did: "You grouped rows (outline).",
+    why: "Grouping collapses detail rows behind a +/− button: 12 months of rows hide under quarters, 40 SKUs hide under a category. Executives get the summary view; analysts expand for detail — one sheet serves both.",
+    watch: "Collapsed rows are hidden, not deleted — totals still include them. Don't confuse a tidy outline with empty data.",
+    next: "Use Show/Hide Detail in the Outline group to collapse everything for the 'manager view', then expand for work.",
+  },
+  "excel.datatypes": {
+    did: "You inserted linked-data-type fields.",
+    why: "Real Excel's Data Types pull live facts — a column of countries becomes countries *plus* capital and population; tickers become tickers *plus* price. It turns plain text into a mini-database without a single VLOOKUP.",
+    watch: "The Academy ships a static snapshot (training-safe, offline). In the real product these fields refresh from an online service.",
+    next: "Use the new columns like any other: SUM the population, chart the price — they're real columns now.",
+  },
+  "excel.refresh": {
+    did: "You refreshed the data connection.",
+    why: "Data changes upstream; a refresh re-pulls the source so your formulas run on today's numbers, not yesterday's. 'Refresh before you trust' is the first rule of every morning dashboard check.",
+    watch: "A refresh overwrites manual edits made on top of loaded data. Keep analysis formulas on separate sheets — that's why pros never type into the raw sheet.",
+    next: "Refresh again after re-loading a different file — the doctor will re-scan the new data automatically.",
+  },
+  "excel.advfilter": {
+    did: "You extracted unique values with Advanced Filter.",
+    why: "'What are our actual regions? actual product lines?' — the first question of every analysis. Advanced Filter copies one clean copy of each distinct value to its own sheet: instant category lists for dropdowns, pivots and validation rules.",
+    watch: "It copies values only — no formatting, no formulas. That's the point: a clean reference list.",
+    next: "Feed the extracted list into Data Validation ▸ List — now that column can only contain real categories.",
+  },
+  "excel.doctorfix": {
+    did: "You applied a one-click cleaning fix.",
+    why: "Every fix is followed by an instant re-scan: the doctor ticks the issue off the list the moment it's actually gone — verify-after-change is the professional cleaning loop.",
+    watch: "One-click fixes are broad (whole-column trim, full dedupe). If something looks off, Ctrl+Z undoes it cleanly.",
+    next: "Re-open the Clean file tab and watch the issue count drop — anything still red is genuinely left.",
+  },
 };
 
 /* ============================ POWER BI ============================ */

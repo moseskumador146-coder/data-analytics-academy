@@ -20,6 +20,7 @@ import { coachSay } from "@/lib/academy/coach-bus";
 import { LiveCoach } from "./LiveCoach";
 import { useAcademy, type SavedDashboard } from "@/lib/academy/store";
 import { getDatasetById, getSampleCatalog, downloadFile, type Dataset, type Row } from "@/lib/academy/datasets";
+import { applyFix, FIX_LABELS, type DoctorSnapshot, type FixId } from "@/lib/academy/data-doctor";
 import { createDaxEngine } from "@/lib/academy/dax-engine";
 import {
   MS, SEGOE, MsTitleBar, MsWindowGlyphs, MsQatBtn, RibbonTabs, RibbonBody, RGroup, RBig, RSmall,
@@ -330,9 +331,15 @@ export function DashboardTool() {
   const { dashboards, saveDashboard, deleteDashboard, daxMeasures, saveDaxMeasure } = useAcademy();
   const [dsId, setDsId] = React.useState("clean_sales");
   const [customDs, setCustomDs] = React.useState<Dataset | null>(null);
-  const ds = React.useMemo(
+  /* Power Query-style applied steps: cleaned rows per dataset (session scope) */
+  const [pqRows, setPqRows] = React.useState<Record<string, Row[]>>({});
+  const baseDs = React.useMemo(
     () => (customDs && dsId === customDs.id ? customDs : getDatasetById(dsId) ?? getDatasetById("clean_sales")!),
     [dsId, customDs]
+  );
+  const ds = React.useMemo(
+    () => (pqRows[dsId] ? { ...baseDs, rows: pqRows[dsId] } : baseDs),
+    [baseDs, pqRows, dsId]
   );
 
   const [view, setView] = React.useState<"report" | "data" | "model">("report");
@@ -588,6 +595,45 @@ export function DashboardTool() {
     t.push("Data view = check the grain (one row per what?). Model view = your schema card + the implicit measures Power BI created from your visuals.");
     return t;
   }, [view, page.widgets.length]);
+
+  /* Data Doctor — live scan of the CONNECTED dataset (incl. Power Query fixes) */
+  const doctorSnapshot = React.useMemo<DoctorSnapshot | null>(() => {
+    if (!ds.rows.length || !ds.columns.length) return null;
+    const headers = ds.columns.map((c) => c.name);
+    const rows = ds.rows.map((r) => {
+      const o: Record<string, string> = {};
+      ds.columns.forEach((c) => { o[c.name] = String(r[c.key] ?? ""); });
+      return o;
+    });
+    return { source: "dashboard", file: ds.name, headers, rows };
+  }, [ds]);
+
+  const applyDoctorFix = (fix: FixId, col: string | null) => {
+    if (!doctorSnapshot) return;
+    const { headers, rows } = doctorSnapshot;
+    const fixed = applyFix(rows, headers, col, fix);
+    const keyByName = new Map(ds.columns.map((c) => [c.name, c.key]));
+    const numish = /^-?\$?[\d,]+(\.\d+)?%?$/;
+    const newRows: Row[] = fixed.map((o) => {
+      const r: Row = {};
+      for (const [h, v] of Object.entries(o)) {
+        const key = keyByName.get(h);
+        if (!key) continue;
+        if (typeof v === "string" && numish.test(v.trim())) {
+          const n = parseFloat(v.trim().replace(/[$,%\s]/g, ""));
+          r[key] = v.trim().endsWith("%") ? n / 100 : n;
+        } else r[key] = v;
+      }
+      return r;
+    });
+    setPqRows((p) => ({ ...p, [dsId]: newRows }));
+    coachSay("dashboard", "pbi.clean", `Power Query — applied "${FIX_LABELS[fix]}"${col ? ` on ${col}` : ""}`, `${rows.length.toLocaleString()} rows in → ${fixed.length.toLocaleString()} out`);
+  };
+
+  const resetDoctorFixes = () => {
+    setPqRows((p) => { const n = { ...p }; delete n[dsId]; return n; });
+    coachSay("dashboard", "pbi.clean", "Power Query — deleted all applied steps (source reloaded)");
+  };
 
   /* ---------- save / load ---------- */
   const doSave = () => {
@@ -1256,7 +1302,20 @@ export function DashboardTool() {
         )}
 
         {/* hand-in-hand live coach — docked like another Power BI pane */}
-        <LiveCoach tool="dashboard" accent="#b58900" office tips={coachTips} />
+        <LiveCoach
+          tool="dashboard"
+          accent="#b58900"
+          office
+          tips={coachTips}
+          doctor={{
+            snapshot: doctorSnapshot,
+            canFix: true,
+            onFix: applyDoctorFix,
+            onReset: Object.keys(pqRows).length ? resetDoctorFixes : undefined,
+            fixLabel: "Power Query",
+            emptyHint: "Connect a dataset (Home ▸ Get Data) — then I scan every row of the model and list THIS table's exact problems, with Power Query steps and one-click fixes.",
+          }}
+        />
       </div>
 
       {/* saved dashboards */}

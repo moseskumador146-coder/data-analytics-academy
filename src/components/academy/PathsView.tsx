@@ -30,6 +30,11 @@ export function PathsView() {
   const doneCount = flat.filter((l) => completedLessons[l.id]).length;
   const totalMin = PATH_LEVELS.flatMap((l) => l.modules).flatMap((m) => m.lessons).reduce((s, ls) => s + ls.minutes, 0);
 
+  /* the next lesson you haven't completed yet — powers the Continue card */
+  const nextUp = flat.find((l) => !completedLessons[l.id]) ?? flat[0];
+  const nextUpLesson = findLesson(nextUp.id);
+  const started = doneCount > 0;
+
   const lesson = lessonId ? findLesson(lessonId) : null;
   const lessonIdx = lessonId ? flat.findIndex((l) => l.id === lessonId) : -1;
   const prev = lessonIdx > 0 ? flat[lessonIdx - 1] : null;
@@ -70,6 +75,27 @@ export function PathsView() {
         </div>
       </div>
 
+      {/* continue / start card — the friendly “pick up exactly where you are” entry */}
+      {nextUpLesson && (
+        <div className="flex flex-wrap items-center gap-4 rounded-xl border border-emerald-500/25 bg-gradient-to-r from-emerald-500/[0.08] to-transparent px-5 py-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10"><BookOpen className="h-5 w-5 text-emerald-600 dark:text-emerald-400" /></div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">{started ? "Continue where you left off" : "Start here — lesson 1"}</p>
+            <p className="truncate text-[15px] font-bold text-foreground">{nextUpLesson.title}</p>
+            <p className="text-[12px] text-muted-foreground">
+              {PATH_LEVELS.find((l) => l.id === nextUp.level)?.title} · {nextUpLesson.minutes} min · {started ? `you're on lesson ${doneCount + 1} of ${flat.length}` : "no experience needed — this is the true beginning"}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            className="bg-emerald-500 font-semibold text-black hover:bg-emerald-400"
+            onClick={() => openLesson(nextUp.id)}
+          >
+            {started ? "Resume" : "Begin the path"} <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
         {/* curriculum browser */}
         <div className="space-y-2.5">
@@ -85,7 +111,7 @@ export function PathsView() {
                       <p className={`flex items-center gap-2 text-sm font-bold ${open ? c.text : "text-foreground/90"}`}>
                         <span className={`h-2 w-2 rounded-full ${c.dot}`} />{level.title}
                       </p>
-                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80">{level.duration} · {level.modules.length} modules</p>
+                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80">{level.duration} · {level.modules.length} modules · {level.outcomes[0] ? level.outcomes[0].slice(0, 58) + (level.outcomes[0].length > 58 ? "…" : "") : ""}</p>
                     </div>
                     <Badge variant="outline" className={`${c.bg} border-0 text-[10px] ${c.text}`}>{prog.done}/{prog.total}</Badge>
                   </div>
@@ -104,7 +130,7 @@ export function PathsView() {
                               key={ls.id}
                               onClick={() => openLesson(ls.id)}
                               className={`mt-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12.5px] transition-colors ${
-                                active ? "bg-emerald-500/15 text-emerald-200" : done ? "text-muted-foreground/80 hover:bg-muted/60" : "text-foreground/80 hover:bg-muted/60"
+                                active ? "bg-emerald-500/15 font-semibold text-emerald-700 dark:text-emerald-300" : done ? "text-muted-foreground/80 hover:bg-muted/60" : "text-foreground/80 hover:bg-muted/60"
                               }`}
                             >
                               {done ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" /> : active ? <BookOpen className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" /> : <Circle className="h-3 w-3 shrink-0 text-muted-foreground/60" />}

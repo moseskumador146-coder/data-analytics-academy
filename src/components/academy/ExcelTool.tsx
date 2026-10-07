@@ -33,9 +33,12 @@ import {
   PaintBucket, Percent, Plus, Redo2, Search, Save, Sigma, Scissors, Trash2,
   Underline, Undo2, Upload, Wand2, X, DollarSign, Hash, Snowflake,
   SpellCheck2, ZoomIn, ZoomOut, RotateCcw, Table2, TableCellsMerge, SquareSplitHorizontal, WrapText,
+  RefreshCw, Globe2, Database, Columns3, ClipboardCheck, Group as GroupIcon, Ungroup,
+  ChevronsDownUp, ChevronsUpDown, Target, Link2, WandSparkles, Braces, Landmark, TrendingUp,
 } from "lucide-react";
 
 import { COLS, ROWS, colName, refFor, parseRef, evalSheetFormula, FormulaError } from "@/lib/academy/formula-engine";
+import { profileSnapshot, applyFix, FIX_LABELS, type DoctorSnapshot, type FixId } from "@/lib/academy/data-doctor";
 import {
   MS, SEGOE, MsTitleBar, MsWindowGlyphs, MsAutoSave, MsQatBtn, RibbonTabs, RibbonBody, RGroup, RBig, RSmall, MsTip,
   MsMenu, MsMenuItem, MsSep, MsDialog, MsBackstage, MsSelect, ExcelLogo,
@@ -75,6 +78,24 @@ interface XSheet {
   cfRules: CfRule[];
   merges?: MergeRect[];
   comments?: Record<string, string>;
+  validation?: SheetValidation[];
+}
+
+interface SheetValidation {
+  col: number;
+  type: "whole" | "decimal" | "list";
+  min?: number;
+  max?: number;
+  list?: string[];
+}
+
+interface ConnectionInfo {
+  id: string;
+  name: string;
+  kind: "sample" | "csv";
+  rows: number;
+  datasetId?: string;
+  at: number;
 }
 
 interface CfRule {
@@ -159,6 +180,45 @@ function displayGeneral(raw: string): string {
   return raw;
 }
 
+/** Data Validation check — mirrors real Excel's Stop alert behavior. */
+function validateValue(raw: string, rule: SheetValidation): { ok: boolean; msg: string } {
+  if (rule.type === "list") {
+    const hit = rule.list?.some((x) => x.trim().toLowerCase() === raw.trim().toLowerCase());
+    return hit ? { ok: true, msg: "" } : { ok: false, msg: `the value must be one of: ${rule.list?.slice(0, 6).join(", ")}${(rule.list?.length ?? 0) > 6 ? "…" : ""}` };
+  }
+  const n = parseFloat(raw.replace(/[$,\s]/g, ""));
+  if (Number.isNaN(n)) return { ok: false, msg: "a number is required in this column" };
+  if (rule.type === "whole" && !Number.isInteger(n)) return { ok: false, msg: "a whole number is required in this column" };
+  if (rule.min !== undefined && n < rule.min) return { ok: false, msg: `value must be ≥ ${rule.min}` };
+  if (rule.max !== undefined && n > rule.max) return { ok: false, msg: `value must be ≤ ${rule.max}` };
+  return { ok: true, msg: "" };
+}
+
+/** Linked data types (offline training snapshot): Geography + Stocks. */
+const GEO_TYPES: Record<string, { capital: string; population: number }> = {
+  "united states": { capital: "Washington, D.C.", population: 331900000 },
+  "usa": { capital: "Washington, D.C.", population: 331900000 },
+  "united kingdom": { capital: "London", population: 67330000 },
+  "france": { capital: "Paris", population: 67850000 },
+  "germany": { capital: "Berlin", population: 83240000 },
+  "spain": { capital: "Madrid", population: 47350000 },
+  "italy": { capital: "Rome", population: 58940000 },
+  "japan": { capital: "Tokyo", population: 125700000 },
+  "china": { capital: "Beijing", population: 1412000000 },
+  "india": { capital: "New Delhi", population: 1408000000 },
+  "brazil": { capital: "Brasília", population: 214300000 },
+  "canada": { capital: "Ottawa", population: 38250000 },
+  "australia": { capital: "Canberra", population: 25690000 },
+  "nigeria": { capital: "Abuja", population: 211400000 },
+  "mexico": { capital: "Mexico City", population: 126500000 },
+};
+const STOCK_TYPES: Record<string, { price: number; change: number }> = {
+  AAPL: { price: 228.4, change: 1.2 }, MSFT: { price: 419.1, change: -0.6 },
+  GOOGL: { price: 166.8, change: 0.9 }, AMZN: { price: 186.3, change: 2.1 },
+  TSLA: { price: 249.7, change: -2.4 }, NVDA: { price: 121.9, change: 3.5 },
+  META: { price: 507.2, change: 1.8 }, NFLX: { price: 689.5, change: 0.4 },
+};
+
 function usedRange(cells: Record<string, string>): { rows: number; cols: number } {
   let maxR = 0, maxC = 0;
   for (const ref of Object.keys(cells)) {
@@ -215,7 +275,7 @@ function loadWorkbook(): { sheets: XSheet[]; activeId: string } | null {
 
 /* ================= component ================= */
 export function ExcelTool() {
-  const { sheets: savedSheets, saveSheet, deleteSheet } = useAcademy();
+  const { sheets: savedSheets, saveSheet, deleteSheet, setView } = useAcademy();
   /* workbook state */
   const [sheets, setSheets] = React.useState<XSheet[]>([]);
   const [activeId, setActiveId] = React.useState<string>("");
@@ -267,6 +327,25 @@ export function ExcelTool() {
   const [pivotDlg, setPivotDlg] = React.useState<{ rowField: number; valField: number; agg: "SUM" | "COUNT" | "AVERAGE"; colField: number | undefined } | null>(null);
   const [commentDlg, setCommentDlg] = React.useState<{ ref: string; text: string } | null>(null);
   const [helpDlg, setHelpDlg] = React.useState<"keys" | "about" | null>(null);
+
+  /* Data tab — real-Excel dialogs & features */
+  const [sortDlg, setSortDlg] = React.useState<{ levels: { col: number; dir: 1 | -1 }[] } | null>(null);
+  const [ttcDlg, setTtcDlg] = React.useState<{ step: 1 | 2; delim: "comma" | "semicolon" | "tab" | "space" } | null>(null);
+  const [dedupeDlg, setDedupeDlg] = React.useState<{ cols: number[] } | null>(null);
+  const [validDlg, setValidDlg] = React.useState<{ type: "whole" | "decimal" | "list"; min: string; max: string; list: string } | null>(null);
+  const [consDlg, setConsDlg] = React.useState<{ fn: "SUM" | "COUNT" | "AVERAGE" | "MAX" | "MIN"; keyCol: number; valCol: number } | null>(null);
+  const [subDlg, setSubDlg] = React.useState<{ groupCol: number; fn: "SUM" | "COUNT" | "AVERAGE"; valCol: number } | null>(null);
+  const [goalDlg, setGoalDlg] = React.useState<{ setCell: string; toVal: string; byCell: string; result: string | null } | null>(null);
+  const [advDlg, setAdvDlg] = React.useState<{ col: number } | null>(null);
+  const [webDlg, setWebDlg] = React.useState<{ url: string } | null>(null);
+  const [dtDlg, setDtDlg] = React.useState<{ kind: "geo" | "stock" } | null>(null);
+  const [connPane, setConnPane] = React.useState(false);
+  const [connections, setConnections] = React.useState<ConnectionInfo[]>([]);
+  const [refreshMenu, setRefreshMenu] = React.useState(false);
+  const [whatIfMenu, setWhatIfMenu] = React.useState(false);
+  const [rowGroups, setRowGroups] = React.useState<{ r1: number; r2: number }[]>([]);
+  const [collapsedGroups, setCollapsedGroups] = React.useState<Set<number>>(new Set());
+  const lastDatasetRef = React.useRef<string | null>(null);
 
   const gridRef = React.useRef<HTMLDivElement>(null);
   const fileRef = React.useRef<HTMLInputElement>(null);
@@ -349,6 +428,19 @@ export function ExcelTool() {
   /* ---------- editing ---------- */
   const commit = (move: "down" | "right" | "none" = "none") => {
     if (editVal === null) return;
+    const pc = parseRef(active);
+    /* Data Validation — real Excel refuses the entry with a Stop alert */
+    if (pc && editVal !== "" && !editVal.startsWith("=")) {
+      const rule = sheet?.validation?.find((v) => v.col === pc[0]);
+      if (rule) {
+        const chk = validateValue(editVal, rule);
+        if (!chk.ok) {
+          coachSay("excel", "excel.validate", "Data Validation blocked an invalid entry", chk.msg);
+          setLoadedInfo(`⚠ Data Validation stopped this entry: ${chk.msg}. Fix the value, or review the rule under Data ▸ Data Validation.`);
+          return;
+        }
+      }
+    }
     pushUndo();
     if (editVal.startsWith("=")) coachSay("excel", "excel.formula", `Entered a formula in ${active}`, editVal);
     else if (editVal !== "") coachSay("excel", "excel.edit", `Typed a value into ${active}`, editVal);
@@ -359,7 +451,7 @@ export function ExcelTool() {
       return next;
     });
     setEditVal(null);
-    const [c, r] = parseRef(active)!;
+    const [c, r] = pc!;
     if (move === "down") setSel({ a: [c, Math.min(r + 1, ROWS - 1)], b: [c, Math.min(r + 1, ROWS - 1)] });
     if (move === "right") setSel({ a: [Math.min(c + 1, COLS - 1), r], b: [Math.min(c + 1, COLS - 1), r] });
     gridRef.current?.focus();
@@ -700,6 +792,428 @@ export function ExcelTool() {
     gridRef.current?.focus();
   };
 
+  /* ================= Data tab — real-Excel features (v4) ================= */
+
+  /** multi-level sort (Sort dialog) */
+  const multiSort = (levels: { col: number; dir: 1 | -1 }[]) => {
+    if (!levels.length) return;
+    coachSay("excel", "excel.multisort", `Sorted by ${levels.map((l) => `${headerLabel(l.col)} ${l.dir === 1 ? "A→Z" : "Z→A"}`).join(", then ")}`);
+    const { rows: R, cols: C } = usedRange(cells);
+    if (R < 2) return;
+    pushUndo();
+    const dataRows: string[][] = [];
+    for (let r = 1; r < R; r++) {
+      const row: string[] = [];
+      for (let c = 0; c < C; c++) row.push(cells[refFor(c, r)] ?? "");
+      dataRows.push(row);
+    }
+    dataRows.sort((a, b) => {
+      for (const lv of levels) {
+        const av = a[lv.col] ?? "", bv = b[lv.col] ?? "";
+        const an = parseFloat(av.replace(/[$,\s]/g, "")), bn = parseFloat(bv.replace(/[$,\s]/g, ""));
+        let cmp: number;
+        if (!isNaN(an) && !isNaN(bn)) cmp = an - bn;
+        else cmp = av.localeCompare(bv, undefined, { numeric: true });
+        if (cmp !== 0) return cmp * lv.dir;
+      }
+      return 0;
+    });
+    const next: Record<string, string> = {};
+    for (let c = 0; c < C; c++) { const h = cells[refFor(c, 0)]; if (h) next[refFor(c, 0)] = h; }
+    dataRows.forEach((row, ri) => { row.forEach((v, ci) => { if (v !== "") next[refFor(ci, ri + 1)] = v; }); });
+    setCells(() => next);
+    setRowGroups([]); setCollapsedGroups(new Set());
+    setSortDlg(null);
+    setLoadedInfo(`Sorted ${levels.length} level${levels.length > 1 ? "s" : ""}: ${levels.map((l) => headerLabel(l.col)).join(", then ")}.`);
+    gridRef.current?.focus();
+  };
+
+  /** Text to Columns — split the selected column by delimiter, inserting new columns */
+  const textToColumns = (delim: "comma" | "semicolon" | "tab" | "space") => {
+    const sep: string | RegExp = delim === "comma" ? "," : delim === "semicolon" ? ";" : delim === "tab" ? "\t" : /\s+/;
+    const col = selectedColIdx;
+    const { rows: R, cols: C } = usedRange(cells);
+    const splitRows: string[][] = [];
+    for (let r = 0; r < R; r++) {
+      const raw = cells[refFor(col, r)] ?? "";
+      if (raw.startsWith("=")) { splitRows.push([raw]); continue; }
+      const parts = String(sep) === "," ? raw.split(",") : delim === "semicolon" ? raw.split(";") : delim === "tab" ? raw.split("\t") : raw.trim().split(/\s+/);
+      splitRows.push(parts.map((p) => (delim === "space" ? p : p.trim())).filter((p, i, arr) => !(delim === "space" && p === "" && arr.length === 1)));
+    }
+    const maxParts = Math.max(...splitRows.map((p) => p.length), 1);
+    if (maxParts < 2) {
+      setTtcDlg(null);
+      setLoadedInfo(`No "${delim === "space" ? "spaces" : delim}" found in column ${colName(col)} — nothing to split.`);
+      return;
+    }
+    pushUndo();
+    for (let k = 0; k < maxParts - 1; k++) shiftCols(col + 1, 1);
+    setCells((c) => {
+      const next = { ...c };
+      for (let r = 0; r < R; r++) {
+        splitRows[r].forEach((p, j) => {
+          const ref = refFor(col + j, r);
+          if (p !== "") next[ref] = p; else delete next[ref];
+        });
+      }
+      return next;
+    });
+    coachSay("excel", "excel.ttc", `Text to Columns — split ${headerLabel(col)} by "${delim}" into ${maxParts} columns`, `column ${colName(col)}`);
+    setTtcDlg(null);
+    setLoadedInfo(`Split column ${colName(col)} into ${maxParts} columns (${headerLabel(col)} + ${maxParts - 1} new).`);
+    gridRef.current?.focus();
+    void C;
+  };
+
+  /** Flash Fill — learn the transform from your first example, fill the rest */
+  const flashFill = () => {
+    const col = selectedColIdx;
+    const nb = col > 0 ? col - 1 : col + 1;
+    const { rows: R } = usedRange(cells);
+    let transform: ((s: string) => string) | null = null;
+    let exampleRow = -1;
+    const title = (s: string) => s.toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase());
+    for (let r = 1; r < R; r++) {
+      const t = (cells[refFor(col, r)] ?? "").trim();
+      const s = (cells[refFor(nb, r)] ?? "").trim();
+      if (!t || !s || s.startsWith("=") || t.startsWith("=")) continue;
+      if (s === t) transform = (x) => x.trim();
+      else if (s.toUpperCase() === t) transform = (x) => x.trim().toUpperCase();
+      else if (s.toLowerCase() === t) transform = (x) => x.trim().toLowerCase();
+      else if (title(s) === t) transform = title;
+      else if (s.trim().split(/\s+/)[0] === t) transform = (x) => x.trim().split(/\s+/)[0] ?? "";
+      else if (s.trim().split(/\s+/).slice(1).join(" ") === t) transform = (x) => x.trim().split(/\s+/).slice(1).join(" ");
+      else if (s.trim().split(/\s+/).map((w) => w[0]?.toUpperCase() ?? "").join("") === t) transform = (x) => x.trim().split(/\s+/).map((w) => w[0]?.toUpperCase() ?? "").join("");
+      else if (s.replace(/[^a-z0-9]/gi, "").toLowerCase() === t.replace(/[^a-z0-9]/gi, "").toLowerCase()) transform = (x) => x.replace(/[^a-z0-9]/gi, "");
+      if (transform) { exampleRow = r; break; }
+    }
+    if (!transform) {
+      setLoadedInfo(`Flash Fill needs one example: type what you want in ${colName(col)} next to an existing value in ${colName(nb)}, then press Flash Fill.`);
+      return;
+    }
+    let filled = 0;
+    pushUndo();
+    setCells((c) => {
+      const next = { ...c };
+      for (let r = 1; r < R; r++) {
+        const cur = next[refFor(col, r)] ?? "";
+        if (cur.trim() !== "") continue;
+        const s = next[refFor(nb, r)] ?? "";
+        if (!s.trim() || s.startsWith("=")) continue;
+        const out = transform!(s);
+        if (out) { next[refFor(col, r)] = out; filled++; }
+      }
+      return next;
+    });
+    coachSay("excel", "excel.flash", `Flash Fill filled ${filled} cells from your example`, `pattern learned in ${colName(col)} (from ${colName(nb)})`);
+    setLoadedInfo(`Flash Fill: learned the pattern from row ${exampleRow + 1} and filled ${filled} cells in ${colName(col)}. Spot-check a few!`);
+    gridRef.current?.focus();
+  };
+
+  /** Remove Duplicates with chosen key columns (dialog) */
+  const dedupeCols = (cols: number[]) => {
+    const { rows: R, cols: C } = usedRange(cells);
+    pushUndo();
+    const seen = new Set<string>();
+    const next: Record<string, string> = {};
+    for (let c = 0; c < C; c++) { const h = cells[refFor(c, 0)]; if (h) next[refFor(c, 0)] = h; }
+    let kept = 0;
+    for (let r = 1; r < R; r++) {
+      const key = cols.map((c) => (cells[refFor(c, r)] ?? "").trim().toLowerCase()).join("\u0001");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      for (let c = 0; c < C; c++) { const v = cells[refFor(c, r)]; if (v) next[refFor(c, kept + 1)] = v; }
+      kept++;
+    }
+    const removed = R - 1 - kept;
+    setCells(() => next);
+    coachSay("excel", "excel.clean", `Remove Duplicates — key: ${cols.map((c) => headerLabel(c)).join(", ")}`, `${R - 1} rows → ${kept} (removed ${removed})`);
+    setDedupeDlg(null);
+    setLoadedInfo(`Remove Duplicates: ${R - 1} rows in, ${kept} out — ${removed} duplicate${removed === 1 ? "" : "s"} removed. Write those numbers down: that's your cleaning log.`);
+    gridRef.current?.focus();
+  };
+
+  /** Data Validation — save a rule for the selected column */
+  const applyValidation = (v: { type: "whole" | "decimal" | "list"; min: string; max: string; list: string }) => {
+    const col = selectedColIdx;
+    const rule: SheetValidation = { col, type: v.type };
+    if (v.type === "list") rule.list = v.list.split(",").map((s) => s.trim()).filter(Boolean);
+    else {
+      const mn = parseFloat(v.min), mx = parseFloat(v.max);
+      if (!isNaN(mn)) rule.min = mn;
+      if (!isNaN(mx)) rule.max = mx;
+    }
+    pushUndo();
+    updateSheet(sheet.id, (s) => ({ validation: [...(s.validation ?? []).filter((x) => x.col !== col), rule] }));
+    coachSay("excel", "excel.validate", `Data Validation set on ${headerLabel(col)}`, v.type === "list" ? `allowed: ${rule.list?.slice(0, 4).join(", ")}…` : `${v.type} ${rule.min ?? "-∞"} to ${rule.max ?? "∞"}`);
+    setValidDlg(null);
+    setLoadedInfo(`Validation rule active on column ${colName(col)} (${headerLabel(col)}). Type a breaking value — Excel refuses it, exactly like the real product.`);
+  };
+
+  const circleInvalid = () => {
+    const rules = sheet.validation ?? [];
+    if (!rules.length) { setLoadedInfo("No validation rules yet — set one first with Data ▸ Data Validation."); return; }
+    const bad: string[] = [];
+    setStyles((st) => {
+      const next = { ...st };
+      for (const rule of rules) {
+        for (let r = 1; r < usedR; r++) {
+          const ref = refFor(rule.col, r);
+          const v = cells[ref] ?? "";
+          if (v === "") continue;
+          if (!validateValue(v, rule).ok) { next[ref] = { ...next[ref], bg: "#FFC7CE" }; bad.push(ref); }
+        }
+      }
+      return next;
+    });
+    setLoadedInfo(bad.length ? `Circle Invalid: ${bad.length} cell${bad.length === 1 ? "" : "s"} break the rules — circled in red. ${bad.slice(0, 6).join(", ")}${bad.length > 6 ? "…" : ""}` : "Circle Invalid: every cell passes its column's rule. ✔");
+    coachSay("excel", "excel.validate", `Circled invalid data — ${bad.length} cell(s) flagged`);
+  };
+
+  const clearCircles = () => {
+    setStyles((st) => {
+      const next = { ...st };
+      for (const rule of sheet.validation ?? [])
+        for (let r = 1; r < usedR; r++) {
+          const ref = refFor(rule.col, r);
+          if (next[ref]?.bg === "#FFC7CE") next[ref] = { ...next[ref], bg: undefined };
+        }
+      return next;
+    });
+    setLoadedInfo("Cleared the invalid-data circles.");
+  };
+
+  /** Consolidate — aggregate rows by a key column into a new summary sheet */
+  const consolidate = (fn: "SUM" | "COUNT" | "AVERAGE" | "MAX" | "MIN", keyCol: number, valCol: number) => {
+    const { rows: R } = usedRange(cells);
+    if (R < 2) { setConsDlg(null); return; }
+    const groups = new Map<string, number[]>();
+    for (let r = 1; r < R; r++) {
+      const k = (cells[refFor(keyCol, r)] ?? "").trim();
+      if (!k) continue;
+      const raw = cells[refFor(valCol, r)] ?? "";
+      const n = raw.startsWith("=") ? parseFloat(displayValue(refFor(valCol, r), cells, styles).replace(/[$,\s]/g, "")) : parseFloat(raw.replace(/[$,\s]/g, ""));
+      const arr = groups.get(k) ?? [];
+      if (!isNaN(n)) arr.push(n);
+      groups.set(k, arr);
+    }
+    const agg = (xs: number[]): number => {
+      if (fn === "COUNT") return groups.get(fn) ? xs.length : xs.length; // count of numeric occurrences
+      if (!xs.length) return 0;
+      if (fn === "SUM") return xs.reduce((a, b) => a + b, 0);
+      if (fn === "AVERAGE") return xs.reduce((a, b) => a + b, 0) / xs.length;
+      if (fn === "MAX") return Math.max(...xs);
+      return Math.min(...xs);
+    };
+    pushUndo();
+    const s = newSheet("Consolidation");
+    const nc: Record<string, string> = {};
+    nc[refFor(0, 0)] = headerLabel(keyCol);
+    nc[refFor(1, 0)] = `${fn} of ${headerLabel(valCol)}`;
+    const st: Record<string, CellStyle> = {
+      [refFor(0, 0)]: { b: true, bg: "#e5e7eb" },
+      [refFor(1, 0)]: { b: true, bg: "#e5e7eb" },
+    };
+    const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    keys.forEach((k, ri) => {
+      nc[refFor(0, ri + 1)] = k;
+      nc[refFor(1, ri + 1)] = String(+agg(groups.get(k)!).toFixed(2));
+    });
+    if (fn === "SUM" && keys.length) {
+      nc[refFor(0, keys.length + 1)] = "Grand Total";
+      nc[refFor(1, keys.length + 1)] = String(+keys.reduce((sum, k) => sum + agg(groups.get(k)!), 0).toFixed(2));
+      st[refFor(0, keys.length + 1)] = { b: true };
+      st[refFor(1, keys.length + 1)] = { b: true };
+    }
+    s.cells = nc; s.styles = st; s.freeze = "top";
+    setSheets((ss) => [...ss, s]);
+    setActiveId(s.id);
+    setSel({ a: [0, 0], b: [0, 0] });
+    coachSay("excel", "excel.consolidate", `Consolidated ${R - 1} rows into ${keys.length} groups (${fn})`, `${headerLabel(keyCol)} → ${fn} of ${headerLabel(valCol)}`);
+    setConsDlg(null);
+    setLoadedInfo(`Consolidation written to a new sheet: ${keys.length} groups, ${fn} of ${headerLabel(valCol)}.${fn === "SUM" ? " Grand Total included." : ""}`);
+  };
+
+  /** Subtotal — sort by group, insert subtotal rows + grand total (mutates the sheet like real Excel) */
+  const insertSubtotal = (groupCol: number, fn: "SUM" | "COUNT" | "AVERAGE", valCol: number) => {
+    const { rows: R, cols: C } = usedRange(cells);
+    if (R < 2) { setSubDlg(null); return; }
+    pushUndo();
+    const rows: string[][] = [];
+    for (let r = 1; r < R; r++) {
+      const row: string[] = [];
+      for (let c = 0; c < C; c++) row.push(cells[refFor(c, r)] ?? "");
+      rows.push(row);
+    }
+    rows.sort((a, b) => (a[groupCol] ?? "").localeCompare(b[groupCol] ?? "", undefined, { numeric: true }));
+    const num = (s: string) => parseFloat((s ?? "").replace(/[$,\s]/g, ""));
+    const out: string[][] = [];
+    let gi = 0;
+    while (gi < rows.length) {
+      let gj = gi;
+      while (gj < rows.length && rows[gj][groupCol] === rows[gi][groupCol]) gj++;
+      const grp = rows.slice(gi, gj);
+      out.push(...grp);
+      const vals = grp.map((rw) => num(rw[valCol])).filter((n) => !isNaN(n));
+      const aggV = fn === "COUNT" ? vals.length : fn === "SUM" ? vals.reduce((a, b) => a + b, 0) : vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+      const lab = `${rows[gi][groupCol] || "(blank)"} ${fn === "AVERAGE" ? "Average" : fn} `;
+      const subRow = Array.from({ length: C }, () => "");
+      subRow[groupCol] = `${lab.trim()} Total`;
+      subRow[valCol] = String(+aggV.toFixed(2));
+      out.push(subRow);
+      gi = gj;
+    }
+    const totals = out.map((rw) => num(rw[valCol])).filter((_, i) => out[i][groupCol].endsWith("Total"));
+    const grand = fn === "COUNT" ? totals.length : fn === "SUM" ? totals.reduce((a, b) => a + b, 0) : totals.length ? totals.reduce((a, b) => a + b, 0) / totals.length : 0;
+    const grandRow = Array.from({ length: C }, () => "");
+    grandRow[groupCol] = "Grand Total";
+    grandRow[valCol] = String(+grand.toFixed(2));
+    out.push(grandRow);
+    const next: Record<string, string> = {};
+    for (let c = 0; c < C; c++) { const h = cells[refFor(c, 0)]; if (h) next[refFor(c, 0)] = h; }
+    out.forEach((rw, ri) => rw.forEach((v, ci) => { if (v !== "") next[refFor(ci, ri + 1)] = v; }));
+    setCells(() => next);
+    setStyles((st) => {
+      const n2 = { ...st };
+      for (let ri = 0; ri < out.length; ri++) {
+        if (out[ri][groupCol].endsWith("Total") || out[ri][groupCol] === "Grand Total") {
+          for (let c = 0; c < C; c++) n2[refFor(c, ri + 1)] = { ...n2[refFor(c, ri + 1)], b: true, bg: out[ri][groupCol] === "Grand Total" ? "#FCE4D6" : "#FFEB9C" };
+        }
+      }
+      return n2;
+    });
+    coachSay("excel", "excel.subtotal", `Subtotals per ${headerLabel(groupCol)} (${fn}) + Grand Total`, `${out.length} rows written`);
+    setSubDlg(null);
+    setLoadedInfo(`Subtotals inserted: one row per ${headerLabel(groupCol)} (${fn}) plus a Grand Total. Detail was sorted by ${headerLabel(groupCol)} first.`);
+    gridRef.current?.focus();
+  };
+
+  /** Goal Seek — back-solve the input so the formula hits the target */
+  const runGoalSeek = (g: { setCell: string; toVal: string; byCell: string }) => {
+    const sp = parseRef(g.setCell.trim().toUpperCase());
+    const bp = parseRef(g.byCell.trim().toUpperCase());
+    const target = parseFloat(g.toVal);
+    if (!sp || !bp || isNaN(target)) { setGoalDlg({ ...g, result: "Check the cell references (like K2) and the target value." }); return; }
+    const setRef = refFor(sp[0], sp[1]);
+    const expr = cells[setRef] ?? "";
+    if (!expr.startsWith("=")) { setGoalDlg({ ...g, result: `Cell ${setRef} must contain a formula to goal-seek.` }); return; }
+    const f = (x: number): number => {
+      try {
+        const test = { ...cells, [refFor(bp[0], bp[1])]: String(x) };
+        const v = evalSheetFormula(expr.slice(1), test, new Set([setRef]));
+        return typeof v === "number" ? v : NaN;
+      } catch { return NaN; }
+    };
+    let lo = -1e7, hi = 1e7, found: number | null = null;
+    const flo = f(lo), fhi = f(hi);
+    if (!isNaN(flo) && !isNaN(fhi) && (flo - target) * (fhi - target) <= 0) {
+      for (let i = 0; i < 90; i++) {
+        const mid = (lo + hi) / 2;
+        const fm = f(mid);
+        if (isNaN(fm)) break;
+        if (Math.abs(fm - target) < 0.0001) { found = mid; break; }
+        if ((flo - target) * (fm - target) <= 0) hi = mid; else { lo = mid; }
+      }
+      if (found === null) found = (lo + hi) / 2;
+    }
+    if (found === null) { setGoalDlg({ ...g, result: "No solution found in the range ±10,000,000 — the formula may not depend on the changing cell." }); return; }
+    pushUndo();
+    setCells((c) => ({ ...c, [refFor(bp[0], bp[1])]: String(+found.toFixed(6)) }));
+    coachSay("excel", "excel.goalseek", `Goal Seek — set ${setRef} to ${target} by changing ${refFor(bp[0], bp[1])}`, `solved input = ${+found.toFixed(4)}`);
+    setGoalDlg(null);
+    setLoadedInfo(`Goal Seek solved it: ${refFor(bp[0], bp[1])} = ${+found.toFixed(4)} makes ${setRef} hit ${target}. (Ctrl+Z restores your old input.)`);
+    gridRef.current?.focus();
+  };
+
+  /** Advanced Filter — extract unique values of a column to a new sheet */
+  const advancedFilterExtract = (col: number) => {
+    const { rows: R } = usedRange(cells);
+    const seen = new Set<string>();
+    const uniq: string[] = [];
+    for (let r = 1; r < R; r++) {
+      const v = cells[refFor(col, r)] ?? "";
+      if (!v.trim()) continue;
+      const k = v.trim().toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      uniq.push(v.trim());
+    }
+    pushUndo();
+    const s = newSheet("Extract");
+    const nc: Record<string, string> = { [refFor(0, 0)]: headerLabel(col) };
+    uniq.forEach((v, ri) => { nc[refFor(0, ri + 1)] = v; });
+    s.cells = nc;
+    s.styles = { [refFor(0, 0)]: { b: true, bg: "#e5e7eb" } };
+    s.freeze = "top";
+    setSheets((ss) => [...ss, s]);
+    setActiveId(s.id);
+    setSel({ a: [0, 0], b: [0, 0] });
+    coachSay("excel", "excel.advfilter", `Advanced Filter — extracted ${uniq.length} unique values of ${headerLabel(col)}`);
+    setAdvDlg(null);
+    setLoadedInfo(`Extracted ${uniq.length} unique values of ${headerLabel(col)} to the "Extract" sheet — a clean list ready for dropdowns and validation.`);
+  };
+
+  /** Data Types — insert linked fields for the values found in the selected column */
+  const insertDataTypes = (kind: "geo" | "stock") => {
+    const col = selectedColIdx;
+    const { rows: R } = usedRange(cells);
+    let hits = 0;
+    const vals: { r: number; data: string[]; headers: string[] }[] = [];
+    for (let r = 1; r < R; r++) {
+      const raw = (cells[refFor(col, r)] ?? "").trim();
+      if (!raw || raw.startsWith("=")) continue;
+      if (kind === "geo") {
+        const g = GEO_TYPES[raw.toLowerCase()];
+        if (g) { hits++; vals.push({ r, data: [g.capital, String(g.population)], headers: ["Capital", "Population"] }); }
+      } else {
+        const s = STOCK_TYPES[raw.toUpperCase()];
+        if (s) { hits++; vals.push({ r, data: [String(s.price), String(s.change)], headers: ["Price (USD)", "Day Change %"] }); }
+      }
+    }
+    if (!hits) {
+      setDtDlg(null);
+      setLoadedInfo(kind === "geo"
+        ? `No countries found in column ${colName(col)}. Try a column containing: United States, United Kingdom, France, Germany, Japan, India, Brazil, Canada, Australia, Nigeria, Mexico, Spain, Italy or China.`
+        : `No tickers found in column ${colName(col)}. Try a column containing: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META or NFLX.`);
+      return;
+    }
+    pushUndo();
+    const newHeaders = vals[0].headers;
+    for (let k = 0; k < newHeaders.length; k++) shiftCols(col + 1, 1);
+    setCells((c) => {
+      const next = { ...c };
+      newHeaders.forEach((h, k) => { next[refFor(col + 1 + k, 0)] = h; });
+      vals.forEach((v) => v.data.forEach((d, k) => { next[refFor(col + 1 + k, v.r)] = d; }));
+      return next;
+    });
+    coachSay("excel", "excel.datatypes", `Data Types — inserted ${newHeaders.join(" & ")} for ${hits} value(s) in ${headerLabel(col)}`);
+    setDtDlg(null);
+    setLoadedInfo(`Inserted ${newHeaders.join(" and ")} for ${hits} ${kind === "geo" ? "countr" + (hits === 1 ? "y" : "ies") : "ticker"}${hits === 1 ? "" : "s"} (offline snapshot for training).`);
+    gridRef.current?.focus();
+  };
+
+  /** Outline groups — collapse detail rows behind +/− like Excel's outline */
+  const groupSelRows = () => {
+    const { r1, r2 } = nSel;
+    if (r1 === 0 && r2 === 0) { setLoadedInfo("Select the rows to group first (drag the row numbers)."); return; }
+    pushUndo();
+    setRowGroups((g) => [...g, { r1, r2 }]);
+    coachSay("excel", "excel.group", `Grouped rows ${r1 + 1}–${r2 + 1} (outline)`);
+    setLoadedInfo(`Grouped rows ${r1 + 1}–${r2 + 1}. Use Hide/Show Detail in Data ▸ Outline to collapse them for the manager view.`);
+  };
+  const ungroupSelRows = () => {
+    const { r1, r2 } = nSel;
+    pushUndo();
+    setRowGroups((gs) => gs.filter((g) => !(g.r2 >= r1 && g.r1 <= r2)));
+    setCollapsedGroups(new Set());
+    setLoadedInfo("Removed outline groups overlapping the selection.");
+  };
+  const outlineHidden = React.useMemo(() => {
+    const s = new Set<number>();
+    rowGroups.forEach((g, gi) => { if (collapsedGroups.has(gi)) for (let r = g.r1; r <= g.r2; r++) s.add(r); });
+    return s;
+  }, [rowGroups, collapsedGroups]);
+
   /* ---------- autofilter ---------- */
   const distinctValues = (col: number): string[] => {
     const vals = new Set<string>();
@@ -712,6 +1226,7 @@ export function ExcelTool() {
   };
 
   const rowHidden = (r: number): boolean => {
+    if (outlineHidden.has(r)) return true; // collapsed outline group
     for (const [colStr, excl] of Object.entries(hidden)) {
       const col = +colStr;
       if (!excl.size) continue;
@@ -761,7 +1276,13 @@ export function ExcelTool() {
     ds.columns.slice(0, COLS).forEach((_, ci) => { st[refFor(ci, 0)] = { b: true, bg: "#e5e7eb" }; });
     updateSheet(sheet.id, { cells: next, styles: st, freeze: "top" });
     setHidden({});
+    setRowGroups([]); setCollapsedGroups(new Set());
     setSel({ a: [0, 0], b: [0, 0] });
+    lastDatasetRef.current = id;
+    setConnections((cs) => [
+      { id: `c_${id}_${Date.now()}`, name: ds.name, kind: "sample" as const, rows: ds.rows.length, datasetId: id, at: Date.now() },
+      ...cs.filter((c) => c.datasetId !== id),
+    ].slice(0, 8));
     setLoadedInfo(
       ds.rows.length > ROWS - 1
         ? `${ds.name}: showing the first ${ROWS - 1} of ${ds.rows.length.toLocaleString()} rows (grid limit). Use the Cleaner or download the CSV for the full file.`
@@ -785,7 +1306,9 @@ export function ExcelTool() {
         });
         setCells(() => next);
         setHidden({});
+        setRowGroups([]); setCollapsedGroups(new Set());
         setSel({ a: [0, 0], b: [0, 0] });
+        setConnections((cs) => [{ id: `c_csv_${Date.now()}`, name: file.name, kind: "csv" as const, rows: res.data.length, at: Date.now() }, ...cs].slice(0, 8));
         setLoadedInfo(`Imported ${file.name}: ${Math.min(res.data.length, ROWS)} rows.`);
       },
     });
@@ -1184,6 +1707,12 @@ export function ExcelTool() {
 
   /* ---------- derived ---------- */
   const { rows: usedR, cols: usedC } = usedRange(cells);
+
+  const headerLabel = (ci: number): string => cells[refFor(ci, 0)] ?? `Column ${colName(ci)}`;
+  const fieldOpts = React.useMemo(
+    () => Array.from({ length: usedC }, (_, i) => ({ value: String(i), label: cells[refFor(i, 0)] ?? `Column ${colName(i)}` })),
+    [cells, usedC]
+  );
   const viewRows = Math.max(usedR + 8, 30);
   const viewCols = Math.max(usedC + 3, 12);
   const formulaCount = Object.values(cells).filter((v) => v.startsWith("=")).length;
@@ -1280,6 +1809,41 @@ export function ExcelTool() {
     }
     return t.slice(0, 3);
   }, [usedR, formulaCount, colStats, selectedColIdx]);
+
+  /* Data Doctor — a live scan of THIS sheet's data, re-run on every edit */
+  const doctorSnapshot = React.useMemo<DoctorSnapshot | null>(() => {
+    if (!sheet) return null;
+    const { rows: R, cols: C } = usedRange(cells);
+    if (R < 2 || C < 1) return null;
+    const headers: string[] = [];
+    for (let c = 0; c < C; c++) headers.push(cells[refFor(c, 0)] ?? `Column ${colName(c)}`);
+    const rows: Record<string, string>[] = [];
+    for (let r = 1; r < R; r++) {
+      const row: Record<string, string> = {};
+      for (let c = 0; c < C; c++) row[headers[c]] = cells[refFor(c, r)] ?? "";
+      rows.push(row);
+    }
+    return { source: "excel", file: `${sheet.name || "Sheet1"} (this sheet)`, headers, rows };
+  }, [sheet?.cells, sheet?.name]);
+
+  const applyDoctorFix = (fix: FixId, col: string | null) => {
+    if (!doctorSnapshot) return;
+    pushUndo();
+    const C = doctorSnapshot.headers.length;
+    const fixed = applyFix(doctorSnapshot.rows, doctorSnapshot.headers, col, fix);
+    const next: Record<string, string> = {};
+    for (let c = 0; c < C; c++) { const h = cells[refFor(c, 0)]; if (h) next[refFor(c, 0)] = h; }
+    fixed.forEach((row, ri) => {
+      for (let c = 0; c < C; c++) {
+        const v = row[doctorSnapshot.headers[c]];
+        if (v !== undefined && v !== "") next[refFor(c, ri + 1)] = v;
+      }
+    });
+    setCells(() => next);
+    coachSay("excel", "excel.doctorfix", `Data Doctor — applied “${FIX_LABELS[fix]}”${col ? ` on ${col}` : ""}`, `${doctorSnapshot.rows.length} rows scanned → ${fixed.length} rows after`);
+    setLoadedInfo(`Fix applied (${FIX_LABELS[fix]}${col ? ` · ${col}` : ""}). The doctor re-scans automatically — watch the Clean file tab tick it off.`);
+    gridRef.current?.focus();
+  };
 
   if (!loaded || !sheet) return <div className={`${PANEL} h-64 animate-pulse`} />;
 
@@ -1652,13 +2216,18 @@ export function ExcelTool() {
 
           {ribbonTab === "data" && (
             <>
+              {/* Get & Transform Data */}
               <RGroup label="Get & Transform Data">
                 <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
-                  <RBig title="Get Data — load one of the Academy sample files" onClick={() => setDataMenu((v) => !v)} chevron label="Get Data"><Download className="h-5 w-5" /></RBig>
+                  <RBig title="Get Data — from files, the web or the Academy's sample library" onClick={() => setDataMenu((v) => !v)} chevron label="Get Data"><Download className="h-5 w-5" /></RBig>
                   {dataMenu && (
-                    <MsMenu width={330}>
-                      <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-[#605e5c]">Sample files — {catalog.length} datasets</p>
-                      <div className="max-h-[320px] overflow-auto">
+                    <MsMenu width={340}>
+                      <p className="px-2.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-[#605e5c]">From this computer</p>
+                      <MsMenuItem onClick={() => { fileRef.current?.click(); setDataMenu(false); }}>From Text/CSV…</MsMenuItem>
+                      <MsMenuItem onClick={() => { setWebDlg({ url: "" }); setDataMenu(false); }}>From Web…</MsMenuItem>
+                      <MsSep />
+                      <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-[#605e5c]">Sample files — {catalog.length} datasets</p>
+                      <div className="max-h-[280px] overflow-auto">
                         {(["Small", "Medium", "Large", "Huge"] as const).map((sz) => (
                           <React.Fragment key={sz}>
                             {catalog.filter((f) => f.size === sz).map((f) => (
@@ -1676,12 +2245,50 @@ export function ExcelTool() {
                     </MsMenu>
                   )}
                 </div>
-                <RBig title="Import your own CSV file" onClick={() => fileRef.current?.click()} label="From CSV"><Upload className="h-5 w-5" /></RBig>
-                <RBig title="Export the sheet as CSV" onClick={exportCSV} label="To CSV"><Save className="h-5 w-5" /></RBig>
+                <RBig title="Turn the selected range into a table you can transform (like Power Query's From Table/Range)" onClick={formatAsTable} label="From Table/Range"><Table2 className="h-5 w-5" /></RBig>
+                <RBig
+                  title="Launch the Power Query-style cleaning workbench"
+                  onClick={() => { coachSay("excel", "excel.data", "Launched the Power Query-style Cleaner workbench"); setView("cleaner"); }}
+                  label="Launch Editor"
+                  accentIcon={MS.excelGreen}
+                ><WandSparkles className="h-5 w-5" /></RBig>
               </RGroup>
+
+              {/* Queries & Connections */}
+              <RGroup label="Queries & Connections">
+                <RSmall title="Show the Queries & Connections pane — every source this workbook has loaded" onClick={() => setConnPane((v) => !v)} active={connPane} toggleLook label="Queries & Connections"><Database className="h-4 w-4" /></RSmall>
+                <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
+                  <RSmall title="Refresh All — re-pull every loaded source so formulas run on today's data" onClick={() => setRefreshMenu((v) => !v)} chevron label="Refresh All"><RefreshCw className="h-4 w-4" /></RSmall>
+                  {refreshMenu && (
+                    <MsMenu>
+                      <MsMenuItem onClick={() => {
+                        setRefreshMenu(false);
+                        if (lastDatasetRef.current) { loadDataset(lastDatasetRef.current); coachSay("excel", "excel.refresh", "Refresh All — reloaded the latest source", lastDatasetRef.current); }
+                        else setLoadedInfo("Nothing to refresh yet — load a source with Get Data first.");
+                      }}>Refresh All</MsMenuItem>
+                      <MsMenuItem onClick={() => {
+                        setRefreshMenu(false);
+                        if (lastDatasetRef.current) { loadDataset(lastDatasetRef.current); coachSay("excel", "excel.refresh", "Refreshed the connection", lastDatasetRef.current); }
+                        else setLoadedInfo("No connection to refresh yet.");
+                      }}>Refresh</MsMenuItem>
+                      <MsMenuItem onClick={() => { setRefreshMenu(false); setConnPane(true); setLoadedInfo("Connection properties are listed in the Queries & Connections pane."); }}>Edit Properties…</MsMenuItem>
+                    </MsMenu>
+                  )}
+                </div>
+                <RSmall title="Edit Links — manage links to external workbooks" onClick={() => setLoadedInfo("This workbook has no external links — data was loaded directly. (Real Excel lists linked workbooks here.)")} label="Edit Links"><Link2 className="h-4 w-4" /></RSmall>
+              </RGroup>
+
+              {/* Data Types */}
+              <RGroup label="Data Types">
+                <RSmall title="Geography — convert a country column into countries with Capital & Population fields" onClick={() => setDtDlg({ kind: "geo" })} label="Geography"><Globe2 className="h-4 w-4" /></RSmall>
+                <RSmall title="Stocks — convert a ticker column into stocks with Price & Day Change fields" onClick={() => setDtDlg({ kind: "stock" })} label="Stocks"><TrendingUp className="h-4 w-4" /></RSmall>
+              </RGroup>
+
+              {/* Sort & Filter */}
               <RGroup label="Sort & Filter">
-                <RSmall title="Sort A→Z" onClick={() => sortRows(selectedColIdx, 1)} label="A→Z"><ArrowUpNarrowWide className="h-4 w-4" /></RSmall>
-                <RSmall title="Sort Z→A" onClick={() => sortRows(selectedColIdx, -1)} label="Z→A"><ArrowDownWideNarrow className="h-4 w-4" /></RSmall>
+                <RSmall title="Sort A→Z on the selected column" onClick={() => sortRows(selectedColIdx, 1)} label="A→Z"><ArrowUpNarrowWide className="h-4 w-4" /></RSmall>
+                <RSmall title="Sort Z→A on the selected column" onClick={() => sortRows(selectedColIdx, -1)} label="Z→A"><ArrowDownWideNarrow className="h-4 w-4" /></RSmall>
+                <RSmall title="Sort by multiple levels (Region, then Date…)" onClick={() => setSortDlg({ levels: [{ col: selectedColIdx, dir: 1 }] })} label="Sort"><ListFilter className="h-4 w-4" /></RSmall>
                 <RSmall
                   title="AutoFilter — show filter dropdowns on the header row"
                   onClick={() => { setAfOn(!afOn); if (afOn) { setHidden({}); setFilterCol(null); } }}
@@ -1690,16 +2297,69 @@ export function ExcelTool() {
                   label="Filter"
                 ><Filter className="h-4 w-4" /></RSmall>
                 <RSmall title="Clear all filters" onClick={() => { setHidden({}); setFilterCol(null); }} label="Clear" />
+                <RSmall title="Reapply — re-run the filters against changed data" onClick={() => { setHidden({ ...hidden }); setLoadedInfo("Filters reapplied against the current data."); }} label="Reapply" />
+                <RSmall title="Advanced Filter — copy unique values of a column to their own sheet" onClick={() => setAdvDlg({ col: selectedColIdx })} label="Advanced"><Clipboard className="h-4 w-4" /></RSmall>
               </RGroup>
+
+              {/* Data Tools */}
               <RGroup label="Data Tools">
-                <RSmall title="Remove duplicate rows" onClick={dedupeRows} label="Remove Dupes"><Wand2 className="h-4 w-4" /></RSmall>
-                <span className="self-center px-1 text-[10.5px] text-[#605e5c]">Text col {colName(selectedColIdx)}:</span>
-                {(["trim", "upper", "lower", "title"] as const).map((m) => (
-                  <RSmall key={m} title={`Make column ${colName(selectedColIdx)} ${m}`} onClick={() => transformCol(m)} label={m} />
-                ))}
+                <RSmall title="Text to Columns — split one column into several by a delimiter" onClick={() => setTtcDlg({ step: 1, delim: "comma" })} label="Text to Columns"><Columns3 className="h-4 w-4" /></RSmall>
+                <RSmall title="Flash Fill (Ctrl+E) — learn the pattern from one example and fill the rest" onClick={flashFill} label="Flash Fill"><Wand2 className="h-4 w-4" /></RSmall>
+                <RSmall title="Remove Duplicates — choose the key columns, Excel keeps the first of each" onClick={() => setDedupeDlg({ cols: Array.from({ length: usedC }, (_, i) => i) })} label="Remove Dupes"><Wand2 className="h-4 w-4" /></RSmall>
+                <RSmall title="Data Validation — restrict what can be typed in this column" onClick={() => setValidDlg({ type: "whole", min: "0", max: "1000", list: "" })} label="Validation"><ClipboardCheck className="h-4 w-4" /></RSmall>
+                <RSmall title="Consolidate — aggregate rows by a key column into a summary sheet" onClick={() => setConsDlg({ fn: "SUM", keyCol: 0, valCol: Math.min(usedC - 1, 1) })} label="Consolidate"><Sigma className="h-4 w-4" /></RSmall>
               </RGroup>
-              <RGroup label="Save" last>
-                <RBig title="Save this sheet to your Academy portfolio" onClick={() => saveSheet(sheet.name || "Sheet1", cells)} label="Save"><Save className="h-5 w-5" /></RBig>
+
+              {/* Forecast */}
+              <RGroup label="Forecast">
+                <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
+                  <RSmall title="What-If Analysis — Goal Seek back-solves an input to hit a target" onClick={() => setWhatIfMenu((v) => !v)} chevron label="What-If Analysis"><Target className="h-4 w-4" /></RSmall>
+                  {whatIfMenu && (
+                    <MsMenu>
+                      <MsMenuItem onClick={() => { setWhatIfMenu(false); setGoalDlg({ setCell: "", toVal: "", byCell: "", result: null }); }}>Goal Seek…</MsMenuItem>
+                      <MsMenuItem onClick={() => { setWhatIfMenu(false); setLoadedInfo("Data Tables re-run one formula across a grid of inputs — build one by copying your formula row, listing the inputs, then What-If ▸ Data Table in real Excel."); }}>Data Table…</MsMenuItem>
+                      <MsMenuItem onClick={() => { setWhatIfMenu(false); setLoadedInfo("Scenario Manager stores named sets of inputs (Best case / Worst case…). Try Goal Seek first — same engine, one target."); }}>Scenario Manager…</MsMenuItem>
+                    </MsMenu>
+                  )}
+                </div>
+                <RSmall
+                  title="Forecast Sheet — project the selected numeric column forward with a linear trend"
+                  onClick={() => {
+                    const col = selectedColIdx;
+                    const vals: number[] = [];
+                    for (let r = 1; r < usedR; r++) {
+                      const n = parseFloat((cells[refFor(col, r)] ?? "").replace(/[$,\s]/g, ""));
+                      if (!isNaN(n)) vals.push(n);
+                    }
+                    if (vals.length < 4) { setLoadedInfo("Forecast needs at least 4 numeric rows in the selected column."); return; }
+                    const n = vals.length;
+                    const xs = vals.map((_, i) => i + 1);
+                    const mx = xs.reduce((a, b) => a + b, 0) / n, my = vals.reduce((a, b) => a + b, 0) / n;
+                    const slope = xs.reduce((s, x, i) => s + (x - mx) * (vals[i] - my), 0) / (xs.reduce((s, x) => s + (x - mx) * (x - mx), 0) || 1);
+                    const intercept = my - slope * mx;
+                    pushUndo();
+                    const s = newSheet("Forecast");
+                    const nc: Record<string, string> = { [refFor(0, 0)]: headerLabel(col), [refFor(1, 0)]: "Forecast" };
+                    const stl: Record<string, CellStyle> = { [refFor(0, 0)]: { b: true, bg: "#e5e7eb" }, [refFor(1, 0)]: { b: true, bg: "#e5e7eb" } };
+                    vals.forEach((v, i) => { nc[refFor(0, i + 1)] = String(v); });
+                    for (let k = 0; k < 6; k++) nc[refFor(1, k + 1)] = String(+(intercept + slope * (n + k)).toFixed(2));
+                    s.cells = nc; s.styles = stl; s.freeze = "top";
+                    setSheets((ss) => [...ss, s]); setActiveId(s.id); setSel({ a: [0, 0], b: [0, 0] });
+                    coachSay("excel", "excel.goalseek", "Forecast Sheet — projected the next 6 periods with a linear trend", `${headerLabel(col)}: trend ${slope >= 0 ? "+" : ""}${slope.toFixed(2)} per row`);
+                    setLoadedInfo(`Forecast written to a new sheet: linear trend of ${headerLabel(col)} continues ${slope >= 0 ? "up" : "down"} ~${Math.abs(slope).toFixed(2)} per row for 6 more periods.`);
+                  }}
+                  label="Forecast Sheet"
+                ><ChartLine className="h-4 w-4" /></RSmall>
+              </RGroup>
+
+              {/* Outline */}
+              <RGroup label="Outline" last>
+                <RSmall title="Group — bundle the selected rows so they can collapse behind a +/− " onClick={groupSelRows} label="Group"><GroupIcon className="h-4 w-4" /></RSmall>
+                <RSmall title="Ungroup — remove outline groups from the selection" onClick={ungroupSelRows} label="Ungroup"><Ungroup className="h-4 w-4" /></RSmall>
+                <RSmall title="Hide Detail — collapse every group for the summary view" onClick={() => { if (!rowGroups.length) { setLoadedInfo("No groups yet — select rows and press Group first."); return; } setCollapsedGroups(new Set(rowGroups.map((_, i) => i))); setLoadedInfo("Detail hidden — the sheet now shows the manager's summary view."); }}><ChevronsDownUp className="h-4 w-4" /></RSmall>
+                <RSmall title="Show Detail — expand every collapsed group" onClick={() => { setCollapsedGroups(new Set()); }}><ChevronsUpDown className="h-4 w-4" /></RSmall>
+                <RSmall title="Subtotal — sort by a column and insert a subtotal row per group + Grand Total" onClick={() => setSubDlg({ groupCol: 0, fn: "SUM", valCol: Math.min(usedC - 1, 1) })} label="Subtotal"><Sigma className="h-4 w-4" /></RSmall>
+                {rowGroups.length > 0 && <span className="self-center px-1.5 text-[10.5px] text-[#605e5c]">{rowGroups.length} group{rowGroups.length > 1 ? "s" : ""} · {collapsedGroups.size} collapsed</span>}
               </RGroup>
             </>
           )}
@@ -2153,7 +2813,19 @@ export function ExcelTool() {
         </div>
         </div>
 
-        <LiveCoach tool="excel" accent={MS.excelGreen} office tips={tips} />
+        <LiveCoach
+          tool="excel"
+          accent={MS.excelGreen}
+          office
+          tips={tips}
+          doctor={{
+            snapshot: doctorSnapshot,
+            canFix: true,
+            onFix: applyDoctorFix,
+            fixLabel: "Excel",
+            emptyHint: "Load a file first (Data ▸ Get Data or File ▸ Open) — then I scan every cell in it and list THIS file's exact problems: blanks, duplicates, text-numbers, date chaos and more, with the rows to look at.",
+          }}
+        />
       </div>
 
       {/* ============ autofilter panel (dialog-style) ============ */}
@@ -2511,6 +3183,295 @@ export function ExcelTool() {
             )}
             <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setCommentDlg(null)}>Cancel</button>
             <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={saveComment}>Save comment</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Queries & Connections pane (docked left, like Excel's side pane) ===== */}
+      {connPane && (
+        <div className="fixed left-3 top-44 z-30 flex max-h-[60vh] w-[300px] flex-col overflow-hidden rounded-[6px] border bg-white shadow-[0_10px_32px_rgba(0,0,0,0.22)]" style={{ borderColor: MS.border }} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between border-b px-3 py-2" style={{ borderColor: "#edebe9" }}>
+            <p className="text-[12px] font-bold" style={{ color: MS.ink }}>Queries &amp; Connections</p>
+            <button onClick={() => setConnPane(false)} className="rounded p-1 text-[#605e5c] hover:bg-[#f3f2f1]" aria-label="Close pane"><X className="h-3.5 w-3.5" /></button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2 scrollbar-thin">
+            {connections.length === 0 ? (
+              <p className="px-1 py-2 text-[11.5px] leading-relaxed text-[#605e5c]">
+                No connections yet. Use <b>Data ▸ Get Data</b> to load a sample file or CSV — every source you load shows up here, ready to refresh.
+              </p>
+            ) : connections.map((c) => (
+              <div key={c.id} className="mb-1.5 rounded-[4px] border border-[#edebe9] px-2.5 py-2 hover:bg-[#f8f8f8]">
+                <p className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: MS.ink }}>
+                  <Database className="h-3.5 w-3.5" style={{ color: MS.excelGreen }} />
+                  <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                </p>
+                <p className="mt-0.5 text-[10.5px] text-[#605e5c]">{c.kind === "sample" ? "Sample dataset" : "CSV file"} · {c.rows.toLocaleString()} rows · loaded {new Date(c.at).toLocaleTimeString()}</p>
+                <div className="mt-1.5 flex gap-1.5">
+                  {c.datasetId && (
+                    <button className="rounded-[3px] border px-2 py-0.5 text-[10.5px] font-semibold hover:bg-[#f3f2f1]" style={{ borderColor: MS.border, color: MS.ink }} onClick={() => { loadDataset(c.datasetId!); coachSay("excel", "excel.refresh", `Refreshed ${c.name} from the Queries & Connections pane`); }}>Refresh</button>
+                  )}
+                  <button className="rounded-[3px] border px-2 py-0.5 text-[10.5px] font-semibold hover:bg-[#f3f2f1]" style={{ borderColor: MS.border, color: MS.ink }} onClick={() => setLoadedInfo(`${c.name} — ${c.rows.toLocaleString()} rows, loaded ${new Date(c.at).toLocaleString()}. Source: ${c.kind === "sample" ? "Academy sample library" : "CSV import"}.`)}>Properties</button>
+                  <button className="ml-auto rounded-[3px] border px-2 py-0.5 text-[10.5px] hover:bg-[#fdf3f4]" style={{ borderColor: MS.border, color: "#a4262c" }} onClick={() => setConnections((cs) => cs.filter((x) => x.id !== c.id))}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ===== Sort dialog (multi-level, like Data ▸ Sort) ===== */}
+      {sortDlg && (
+        <MsDialog title="Sort" onClose={() => setSortDlg(null)} width={430}>
+          <p className="mb-2 text-[11.5px] leading-relaxed text-[#605e5c]">Sort the whole table by up to 4 levels. Rows are sorted together — like real Excel.</p>
+          {sortDlg.levels.map((lv, i) => (
+            <div key={i} className="mb-2 flex items-center gap-2">
+              <span className="w-16 text-[11px] font-semibold" style={{ color: MS.ink }}>Level {i + 1}</span>
+              <MsSelect value={String(lv.col)} onChange={(v) => setSortDlg({ levels: sortDlg.levels.map((l, j) => (j === i ? { ...l, col: +v } : l)) })} options={fieldOpts} ariaLabel="Sort by column" width="180px" />
+              <MsSelect value={String(lv.dir)} onChange={(v) => setSortDlg({ levels: sortDlg.levels.map((l, j) => (j === i ? { ...l, dir: +v as 1 | -1 } : l)) })} options={[{ value: "1", label: "A to Z" }, { value: "-1", label: "Z to A" }]} ariaLabel="Order" width="90px" />
+              <button className="rounded p-1 text-[#a4262c] hover:bg-[#fdf3f4]" title="Delete level" onClick={() => setSortDlg({ levels: sortDlg.levels.filter((_, j) => j !== i) })}><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+          <button
+            className="mt-1 rounded-[3px] border px-3 py-1 text-[12px] font-semibold hover:bg-[#f3f2f1] disabled:opacity-40"
+            style={{ borderColor: MS.border, color: MS.ink }}
+            disabled={sortDlg.levels.length >= 4}
+            onClick={() => setSortDlg({ levels: [...sortDlg.levels, { col: 0, dir: 1 }] })}
+          >+ Add level</button>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setSortDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => multiSort(sortDlg.levels)}>OK</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Text to Columns wizard ===== */}
+      {ttcDlg && (
+        <MsDialog title="Text to Columns" onClose={() => setTtcDlg(null)} width={470}>
+          <p className="mb-1 text-[11px] font-bold uppercase tracking-wide text-[#605e5c]">Step {ttcDlg.step} of 2</p>
+          {ttcDlg.step === 1 ? (
+            <>
+              <p className="mb-2 text-[12.5px] leading-relaxed" style={{ color: MS.ink }}>
+                Column <b>{colName(selectedColIdx)}</b> ({headerLabel(selectedColIdx)}) will be split into new columns. First pick what separates the values.
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(["comma", "semicolon", "tab", "space"] as const).map((d) => (
+                  <button key={d} onClick={() => setTtcDlg({ ...ttcDlg, delim: d })}
+                    className="rounded-[3px] border px-3 py-2 text-left text-[12.5px] capitalize"
+                    style={{ borderColor: ttcDlg.delim === d ? MS.excelGreen : MS.border, background: ttcDlg.delim === d ? "#eaf3ee" : "#fff", color: MS.ink }}
+                  >{d === "comma" ? "Comma  ," : d === "semicolon" ? "Semicolon  ;" : d === "tab" ? "Tab" : "Space"}</button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-[#605e5c]">Example: <b>Austin, TX</b> with Comma → <b>Austin</b> | <b>TX</b>. Existing columns shift right to make room — nothing is overwritten.</p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setTtcDlg(null)}>Cancel</button>
+                <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => setTtcDlg({ ...ttcDlg, step: 2 })}>Next</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mb-2 text-[12.5px] leading-relaxed" style={{ color: MS.ink }}>Ready to split <b>{headerLabel(selectedColIdx)}</b> on <b>{ttcDlg.delim}</b>. A data preview will appear in the grid — press Finish.</p>
+              <div className="mt-4 flex justify-end gap-2">
+                <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setTtcDlg(null)}>Cancel</button>
+                <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setTtcDlg({ ...ttcDlg, step: 1 })}>Back</button>
+                <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => textToColumns(ttcDlg.delim)}>Finish</button>
+              </div>
+            </>
+          )}
+        </MsDialog>
+      )}
+
+      {/* ===== Remove Duplicates dialog ===== */}
+      {dedupeDlg && (
+        <MsDialog title="Remove Duplicates" onClose={() => setDedupeDlg(null)} width={420}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>
+            Tick the columns that make a row unique — Excel keeps the <b>first</b> of each duplicate combination.
+            {dedupeDlg.cols.length === usedC ? " All columns ticked = only fully identical rows are removed." : " Fewer ticked columns = broader key (more removals)."}
+          </p>
+          <div className="max-h-[240px] overflow-auto rounded-[4px] border border-[#edebe9] p-2">
+            {fieldOpts.map((f) => (
+              <label key={f.value} className="flex items-center gap-2 px-1 py-1 text-[12.5px]" style={{ color: MS.ink }}>
+                <input
+                  type="checkbox"
+                  checked={dedupeDlg.cols.includes(+f.value)}
+                  onChange={(e) => setDedupeDlg({ cols: e.target.checked ? [...dedupeDlg.cols, +f.value].sort((a, b) => a - b) : dedupeDlg.cols.filter((c) => c !== +f.value) })}
+                  className="accent-[#217346]"
+                />
+                {f.label}
+              </label>
+            ))}
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setDedupeDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90 disabled:opacity-40" style={{ background: MS.excelGreen }} disabled={!dedupeDlg.cols.length} onClick={() => dedupeCols(dedupeDlg.cols)}>Remove Duplicates</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Data Validation dialog ===== */}
+      {validDlg && (
+        <MsDialog title={`Data Validation — column ${colName(selectedColIdx)}`} onClose={() => setValidDlg(null)} width={440}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>
+            Rule for <b>{headerLabel(selectedColIdx)}</b>: after this, Excel <b>refuses</b> entries that break the rule — exactly like the real Stop alert.
+          </p>
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Allow</span>
+              <MsSelect value={validDlg.type} onChange={(v) => setValidDlg({ ...validDlg, type: v as typeof validDlg.type })} options={[{ value: "whole", label: "Whole number" }, { value: "decimal", label: "Decimal" }, { value: "list", label: "List of values" }]} ariaLabel="Validation type" width="100%" />
+            </label>
+            {validDlg.type === "list" ? (
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Allowed values (comma separated)</span>
+                <input value={validDlg.list} onChange={(e) => setValidDlg({ ...validDlg, list: e.target.value })} placeholder="North, South, East, West" className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+              </label>
+            ) : (
+              <div className="flex gap-2">
+                <label className="flex-1">
+                  <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Minimum</span>
+                  <input value={validDlg.min} onChange={(e) => setValidDlg({ ...validDlg, min: e.target.value })} className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+                </label>
+                <label className="flex-1">
+                  <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Maximum</span>
+                  <input value={validDlg.max} onChange={(e) => setValidDlg({ ...validDlg, max: e.target.value })} className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+                </label>
+              </div>
+            )}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <button className="rounded-[3px] border px-2.5 py-1 text-[11px] font-semibold hover:bg-[#f3f2f1]" style={{ borderColor: MS.border, color: MS.ink }} onClick={circleInvalid}>Circle invalid data now</button>
+            <button className="rounded-[3px] border px-2.5 py-1 text-[11px] font-semibold hover:bg-[#f3f2f1]" style={{ borderColor: MS.border, color: MS.ink }} onClick={clearCircles}>Clear circles</button>
+            <button className="rounded-[3px] border px-2.5 py-1 text-[11px] hover:bg-[#fdf3f4]" style={{ borderColor: MS.border, color: "#a4262c" }} onClick={() => { updateSheet(sheet.id, (s) => ({ validation: (s.validation ?? []).filter((v) => v.col !== selectedColIdx) })); setValidDlg(null); setLoadedInfo(`Validation rule removed from column ${colName(selectedColIdx)}.`); }}>Remove rule</button>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setValidDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => applyValidation(validDlg)}>Apply rule</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Consolidate dialog ===== */}
+      {consDlg && (
+        <MsDialog title="Consolidate" onClose={() => setConsDlg(null)} width={430}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>Aggregate detail rows into one line per key — written to a new <b>Consolidation</b> sheet.</p>
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Group by (labels)</span>
+              <MsSelect value={String(consDlg.keyCol)} onChange={(v) => setConsDlg({ ...consDlg, keyCol: +v })} options={fieldOpts} ariaLabel="Key column" width="100%" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Value to aggregate (numbers)</span>
+              <MsSelect value={String(consDlg.valCol)} onChange={(v) => setConsDlg({ ...consDlg, valCol: +v })} options={fieldOpts} ariaLabel="Value column" width="100%" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Function</span>
+              <MsSelect value={consDlg.fn} onChange={(v) => setConsDlg({ ...consDlg, fn: v as typeof consDlg.fn })} options={["SUM", "COUNT", "AVERAGE", "MAX", "MIN"].map((f) => ({ value: f, label: f }))} ariaLabel="Aggregate function" width="100%" />
+            </label>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setConsDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => consolidate(consDlg.fn, consDlg.keyCol, consDlg.valCol)}>Consolidate</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Subtotal dialog ===== */}
+      {subDlg && (
+        <MsDialog title="Subtotal" onClose={() => setSubDlg(null)} width={430}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>
+            Sorts by the group column, then inserts a <b>subtotal row after each group</b> and a <b>Grand Total</b> at the end — the classic finance layout.
+          </p>
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">At each change in (group)</span>
+              <MsSelect value={String(subDlg.groupCol)} onChange={(v) => setSubDlg({ ...subDlg, groupCol: +v })} options={fieldOpts} ariaLabel="Group column" width="100%" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Add subtotal of (numbers)</span>
+              <MsSelect value={String(subDlg.valCol)} onChange={(v) => setSubDlg({ ...subDlg, valCol: +v })} options={fieldOpts} ariaLabel="Value column" width="100%" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Function</span>
+              <MsSelect value={subDlg.fn} onChange={(v) => setSubDlg({ ...subDlg, fn: v as typeof subDlg.fn })} options={["SUM", "COUNT", "AVERAGE"].map((f) => ({ value: f, label: f }))} ariaLabel="Subtotal function" width="100%" />
+            </label>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setSubDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => insertSubtotal(subDlg.groupCol, subDlg.fn, subDlg.valCol)}>Insert Subtotals</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Goal Seek dialog ===== */}
+      {goalDlg && (
+        <MsDialog title="Goal Seek" onClose={() => setGoalDlg(null)} width={420}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>Back-solve an input: <i>what must the changing cell be for the formula to hit the target?</i></p>
+          <div className="space-y-2.5">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Set cell (must contain a formula)</span>
+              <input value={goalDlg.setCell} onChange={(e) => setGoalDlg({ ...goalDlg, setCell: e.target.value })} placeholder="K2" className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">To value</span>
+              <input value={goalDlg.toVal} onChange={(e) => setGoalDlg({ ...goalDlg, toVal: e.target.value })} placeholder="50000" className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">By changing cell (an input the formula uses)</span>
+              <input value={goalDlg.byCell} onChange={(e) => setGoalDlg({ ...goalDlg, byCell: e.target.value })} placeholder="J2" className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+            </label>
+            {goalDlg.result && <p className="rounded-[3px] border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[12px] text-amber-800">{goalDlg.result}</p>}
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setGoalDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => runGoalSeek(goalDlg)}>Run Goal Seek</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Advanced Filter dialog ===== */}
+      {advDlg && (
+        <MsDialog title="Advanced Filter — extract unique values" onClose={() => setAdvDlg(null)} width={420}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>
+            Copies one clean copy of every distinct value in <b>{headerLabel(advDlg.col)}</b> to a new <b>Extract</b> sheet — perfect for validation lists and report dropdowns.
+          </p>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">Column</span>
+            <MsSelect value={String(advDlg.col)} onChange={(v) => setAdvDlg({ col: +v })} options={fieldOpts} ariaLabel="Extract column" width="100%" />
+          </label>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setAdvDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => advancedFilterExtract(advDlg.col)}>Extract</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== From Web dialog ===== */}
+      {webDlg && (
+        <MsDialog title="From Web" onClose={() => setWebDlg(null)} width={430}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>Real Excel fetches a CSV from a URL here. The Academy runs 100% offline on purpose — nothing leaves your browser — so instead of a live download, pick the same data from the sample library.</p>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#605e5c]">URL</span>
+            <input value={webDlg.url} onChange={(e) => setWebDlg({ ...webDlg, url: e.target.value })} placeholder="https://company.com/reports/sales.csv" className="w-full rounded-[3px] border border-[#d2d0ce] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[#217346]" />
+          </label>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setWebDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => { coachSay("excel", "excel.data", "Tried From Web — offline Academy pointed to the sample library instead"); setDataMenu(true); setWebDlg(null); }}>Connect</button>
+          </div>
+        </MsDialog>
+      )}
+
+      {/* ===== Data Types dialog ===== */}
+      {dtDlg && (
+        <MsDialog title={`Data Types — ${dtDlg.kind === "geo" ? "Geography" : "Stocks"}`} onClose={() => setDtDlg(null)} width={430}>
+          <p className="mb-2 text-[12px] leading-relaxed" style={{ color: MS.ink }}>
+            Scans <b>{headerLabel(selectedColIdx)}</b> for {dtDlg.kind === "geo" ? "country names" : "stock tickers"} and inserts the linked fields as new columns — no VLOOKUP needed.
+          </p>
+          <p className="mb-2 rounded-[3px] bg-[#f8f8f8] px-2.5 py-1.5 text-[11.5px] leading-relaxed text-[#605e5c]">
+            {dtDlg.kind === "geo"
+              ? "Recognised: United States, United Kingdom, France, Germany, Spain, Italy, Japan, China, India, Brazil, Canada, Australia, Nigeria, Mexico → inserts Capital + Population (offline training snapshot)."
+              : "Recognised: AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META, NFLX → inserts Price (USD) + Day Change % (offline training snapshot)."}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button className="rounded-[3px] border border-[#d2d0ce] px-4 py-1.5 text-[12.5px] hover:bg-[#f3f2f1]" onClick={() => setDtDlg(null)}>Cancel</button>
+            <button className="rounded-[3px] px-4 py-1.5 text-[12.5px] font-semibold text-white hover:opacity-90" style={{ background: MS.excelGreen }} onClick={() => insertDataTypes(dtDlg.kind)}>Convert & insert fields</button>
           </div>
         </MsDialog>
       )}

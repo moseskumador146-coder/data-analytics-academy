@@ -10,27 +10,31 @@ import * as React from "react";
 import {
   GraduationCap, Pause, Play, Square, Trash2, X, Lightbulb, Building2, MessageCircleQuestion,
   ListChecks, CheckCircle2, Circle, Radio, ChevronLeft, Send, Briefcase, HelpCircle, ChevronDown,
+  ScanSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAcademy } from "@/lib/academy/store";
 import { useCoachBus, agoLabel, type CoachTool, type CoachAction } from "@/lib/academy/coach-bus";
 import { explainAction, GUIDE_SESSIONS, stepWatched } from "@/lib/academy/coach-kb";
-import { askCoach, ASK_SUGGESTIONS, REAL_WORK } from "@/lib/academy/coach-help";
+import { askCoach, ASK_SUGGESTIONS, REAL_WORK, type AskContext } from "@/lib/academy/coach-help";
 import { Md } from "./shared";
+import { DataDoctor, type DoctorApi } from "./DataDoctor";
+import { profileSnapshot } from "@/lib/academy/data-doctor";
 
 const KIND_ICON: Record<string, string> = {
   data: "📥", edit: "⌨️", formula: "ƒ", autosum: "Σ", format: "🎨", numfmt: "#", sort: "↕",
-  filter: " funnel:", clean: "🧹", chart: "📊", freeze: "📌", merge: "⬒", table: "▦",
+  filter: "🔻", clean: "🧹", chart: "📊", freeze: "📌", merge: "⬒", table: "▦",
   style: "✨", sheet: "🗂", find: "🔍", pastespecial: "📋", pivot: "🔀", comment: "💬",
   save: "💾", undo: "↶", clearfmt: "🧽", visual: "📊", field: "🔌", agg: "Σ", format2: "🎨",
   crossfilter: "🔗", slicer: "🎛", page: "📄", measure: "𝒇𝒙", dataview: "🗄", focus: "🔎",
   drag: "✥", remove: "🗑", theme: "🎭", select: "🔍", where: "🔎", join: "🔗", group: "Σ",
   order: "↕", cte: "🧩", window: "🪟", union: "⊕", error: "❌", exercise: "✅", preview: "👁",
-  import: "📥", template: "📋", export: "📤",
+  import: "📥", template: "📋", export: "📤", fixed: "✅", progress: "⏳", alert: "🚨", fix: "🧹", reset: "↺", multisort: "↕",
+  ttc: "⇥", flash: "✨", validate: "🛂", consolidate: "Σ", subtotal: "🧮", goalseek: "🎯", datatypes: "🌐", refresh: "🔄", advfilter: "📤", doctorfix: "🩺",
 };
 const kindIcon = (kind: string) => KIND_ICON[kind.split(".")[1] ?? ""] ?? "•";
 
-type Tab = "live" | "guide" | "ask" | "real";
+type Tab = "live" | "doctor" | "guide" | "ask" | "real";
 
 /* ---------------- status pill ---------------- */
 function StatusPill({ mode }: { mode: "on" | "paused" | "off" }) {
@@ -141,13 +145,21 @@ function Guide({ tool }: { tool: CoachTool }) {
 }
 
 /* ---------------- ask the coach ---------------- */
-function Ask({ tool }: { tool: CoachTool }) {
+function Ask({ tool, doctor }: { tool: CoachTool; doctor?: DoctorApi }) {
   const [q, setQ] = React.useState("");
   const [history, setHistory] = React.useState<{ q: string; a: string }[]>([]);
   const send = (text?: string) => {
     const question = (text ?? q).trim();
     if (!question) return;
-    const ans = askCoach(tool, question);
+    /* live file context — answers reference the exact file/table loaded */
+    let ctx: AskContext | undefined;
+    const snap = doctor?.snapshot;
+    if (snap) {
+      let topIssues: string[] | undefined;
+      try { topIssues = profileSnapshot(snap).issues.slice(0, 3).map((i) => `${i.title} (${i.count.toLocaleString()})`); } catch {}
+      ctx = { file: snap.file, rows: snap.rows.length, cols: snap.headers.length, topIssues };
+    }
+    const ans = askCoach(tool, question, ctx);
     setHistory((h) => [{ q: question, a: ans?.a ?? "" }, ...h].slice(0, 8));
     setQ("");
   };
@@ -170,7 +182,7 @@ function Ask({ tool }: { tool: CoachTool }) {
       </div>
       {history.length === 0 && (
         <p className="rounded-lg border border-border/70 bg-muted/40 px-3 py-2.5 text-[12px] leading-relaxed text-muted-foreground">
-          Ask the coach anything about the tool you're using — it answers from a library of the questions new analysts actually hit in their first weeks (formulas returning 0, JOIN confusion, which visual to pick…).
+          Ask anything about the tool you're using — every answer is structured (short answer → why → exact steps → example → watch out), and I can see the file you have loaded, so cleaning answers reference <b>your actual data</b>.
         </p>
       )}
       {history.map((h, i) => (
@@ -235,8 +247,8 @@ function RealWork() {
 }
 
 /* ---------------- body (shared by dock + overlay) ---------------- */
-function CoachBody({ tool, accent, office, tips, onClose }: {
-  tool: CoachTool; accent: string; office?: boolean; tips: string[]; onClose?: () => void;
+function CoachBody({ tool, accent, office, tips, doctor, onClose }: {
+  tool: CoachTool; accent: string; office?: boolean; tips: string[]; doctor?: DoctorApi; onClose?: () => void;
 }) {
   const { mode, feed, setMode, clearFeed } = useCoachBus();
   const [tab, setTab] = React.useState<Tab>("live");
@@ -261,8 +273,18 @@ function CoachBody({ tool, accent, office, tips, onClose }: {
     }
   }, [latest?.seq]);
 
+  /* issue count badge for the Clean-file tab — recomputed as data changes */
+  const badgeSnapshot = doctor?.snapshot ?? null;
+  const issueCount = React.useMemo(() => {
+    if (!badgeSnapshot) return null;
+    try {
+      return profileSnapshot(badgeSnapshot).issues.length;
+    } catch { return null; }
+  }, [badgeSnapshot]);
+
   const TABS: [Tab, string, React.ReactNode][] = [
     ["live", "Live", <Radio key="l" className="h-3 w-3" />],
+    ["doctor", "Clean file", <ScanSearch key="d" className="h-3 w-3" />],
     ["guide", "Guide", <ListChecks key="g" className="h-3 w-3" />],
     ["ask", "Ask", <MessageCircleQuestion key="a" className="h-3 w-3" />],
     ["real", "Real work", <Building2 key="r" className="h-3 w-3" />],
@@ -314,6 +336,12 @@ function CoachBody({ tool, accent, office, tips, onClose }: {
               style={tab === id ? { color: accent, borderBottom: `2px solid ${accent}`, marginBottom: "-1px" } : undefined}
             >
               {icon} {label}
+              {id === "doctor" && issueCount !== null && issueCount > 0 && (
+                <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-black text-white">{issueCount > 9 ? "9+" : issueCount}</span>
+              )}
+              {id === "doctor" && issueCount === 0 && (
+                <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[9px] font-black text-white">✓</span>
+              )}
             </button>
           ))}
         </div>
@@ -363,8 +391,9 @@ function CoachBody({ tool, accent, office, tips, onClose }: {
             )}
           </>
         )}
+        {tab === "doctor" && doctor && <DataDoctor tool={tool} api={doctor} />}
         {tab === "guide" && <Guide tool={tool} />}
-        {tab === "ask" && <Ask tool={tool} />}
+        {tab === "ask" && <Ask tool={tool} doctor={doctor} />}
         {tab === "real" && <RealWork />}
       </div>
     </div>
@@ -372,7 +401,7 @@ function CoachBody({ tool, accent, office, tips, onClose }: {
 }
 
 /* ---------------- shells ---------------- */
-export function LiveCoach({ tool, accent, office, tips = [] }: { tool: CoachTool; accent: string; office?: boolean; tips?: string[] }) {
+export function LiveCoach({ tool, accent, office, tips = [], doctor }: { tool: CoachTool; accent: string; office?: boolean; tips?: string[]; doctor?: DoctorApi }) {
   const mode = useCoachBus((s) => s.mode[tool]);
   const [open, setOpen] = React.useState(true);
   const [overlay, setOverlay] = React.useState(false);
@@ -422,7 +451,7 @@ export function LiveCoach({ tool, accent, office, tips = [] }: { tool: CoachTool
           <div className="fixed inset-0 z-50 flex justify-end">
             <div className="absolute inset-0 bg-black/40" onClick={() => setOverlay(false)} />
             <aside className="relative h-full w-full max-w-md border-l shadow-2xl" style={{ borderColor: accent }}>
-              <CoachBody tool={tool} accent={accent} office={office} tips={tips} onClose={() => setOverlay(false)} />
+              <CoachBody tool={tool} accent={accent} office={office} tips={tips} doctor={doctor} onClose={() => setOverlay(false)} />
             </aside>
           </div>
         )}
@@ -434,7 +463,7 @@ export function LiveCoach({ tool, accent, office, tips = [] }: { tool: CoachTool
     <div className="hidden shrink-0 lg:flex" style={{ width: open ? 352 : 44, transition: "width .18s ease" }}>
       {open ? (
         <div className="h-full w-full border-l" style={{ borderColor: office ? "#edebe9" : undefined }}>
-          <CoachBody tool={tool} accent={accent} office={office} tips={tips} onClose={() => setOpenPersist(false)} />
+          <CoachBody tool={tool} accent={accent} office={office} tips={tips} doctor={doctor} onClose={() => setOpenPersist(false)} />
         </div>
       ) : (
         <button
