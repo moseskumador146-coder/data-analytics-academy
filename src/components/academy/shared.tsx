@@ -160,15 +160,11 @@ export function Md({ text, className }: { text: string; className?: string }) {
   return <div className={className}>{blocks}</div>;
 }
 
-/* ---------- level / difficulty badge colors ---------- */
-export function levelBadgeCls(level: string): string {
-  switch (level) {
-    case "Beginner": return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30";
-    case "Intermediate": return "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30";
-    case "Advanced": return "bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/30";
-    case "Master": return "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30";
-    default: return "bg-muted text-foreground/70 border-border";
-  }
+/* ---------- level / difficulty badge colors ----------
+   One restrained neutral style for ALL levels — the label text carries the
+   meaning. (Previously four hues; users asked for fewer colours.) */
+export function levelBadgeCls(_level: string): string {
+  return "bg-muted text-foreground/75 border-border";
 }
 
 /* ---------- section header ---------- */
@@ -216,10 +212,10 @@ export const PANEL_HEAD = "flex items-center justify-between gap-2 border-b bord
 
 /* ---------- sample data picker (grouped by size, with CSV download) ---------- */
 const SIZE_BADGE: Record<string, string> = {
-  Small: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  Medium: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
-  Large: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
-  Huge: "bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  Small: "bg-muted text-muted-foreground",
+  Medium: "bg-muted text-muted-foreground",
+  Large: "bg-muted text-muted-foreground",
+  Huge: "bg-muted text-muted-foreground",
 };
 
 export function DatasetPicker({ value, onPick, onDownload, className }: {

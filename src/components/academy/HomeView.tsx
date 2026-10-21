@@ -15,12 +15,12 @@ import {
 } from "lucide-react";
 
 const TOOLS: { id: ViewId; icon: React.ReactNode; name: string; desc: string; color: string }[] = [
-  { id: "functions", icon: <Sigma className="h-5 w-5" />, name: "Functions Lab", desc: "Excel formulas, DAX measures, SQL functions — taught with live engines", color: "text-emerald-600 dark:text-emerald-400 border-amber-500/30 bg-amber-500/10" },
+  { id: "functions", icon: <Sigma className="h-5 w-5" />, name: "Functions Lab", desc: "Excel formulas, DAX measures, SQL functions — taught with live engines", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
   { id: "excel", icon: <FileSpreadsheet className="h-5 w-5" />, name: "Excel Studio", desc: "Formula engine, SUMIF, stats, sort & dedupe, CSV in/out", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
-  { id: "dashboard", icon: <BarChart3 className="h-5 w-5" />, name: "Dashboard Studio", desc: "Power BI-style builder: KPIs, charts, filters, saved dashboards", color: "text-sky-400 border-sky-500/30 bg-sky-500/10" },
-  { id: "sql", icon: <Database className="h-5 w-5" />, name: "SQL Playground", desc: "Real SQL engine: JOINs, GROUP BY, HAVING, CTEs + 10 drills", color: "text-violet-400 border-violet-500/30 bg-violet-500/10" },
-  { id: "cleaner", icon: <BrushCleaning className="h-5 w-5" />, name: "Data Cleaner", desc: "Profile messy data, one-click fixes, professional cleaning log", color: "text-amber-400 border-amber-500/30 bg-amber-500/10" },
-  { id: "automation", icon: <Workflow className="h-5 w-5" />, name: "Automation Studio", desc: "Visual ETL pipelines, quality gates, run logs → Python export", color: "text-rose-400 border-rose-500/30 bg-rose-500/10" },
+  { id: "dashboard", icon: <BarChart3 className="h-5 w-5" />, name: "Dashboard Studio", desc: "Power BI-style builder: KPIs, charts, filters, saved dashboards", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
+  { id: "sql", icon: <Database className="h-5 w-5" />, name: "SQL Playground", desc: "Real SQL engine: JOINs, GROUP BY, HAVING, CTEs + 10 drills", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
+  { id: "cleaner", icon: <BrushCleaning className="h-5 w-5" />, name: "Data Cleaner", desc: "Profile messy data, one-click fixes, professional cleaning log", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
+  { id: "automation", icon: <Workflow className="h-5 w-5" />, name: "Automation Studio", desc: "Visual ETL pipelines, quality gates, run logs → Python export", color: "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10" },
 ];
 
 export function HomeView() {
@@ -39,10 +39,10 @@ export function HomeView() {
       {/* hero */}
       <div className="relative overflow-hidden rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/[0.08] via-emerald-500/[0.04] to-emerald-900/20 p-6 sm:p-9">
         <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-24 -left-10 h-56 w-56 rounded-full bg-violet-500/10 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 -left-10 h-56 w-56 rounded-full bg-emerald-500/[0.06] blur-3xl" />
         <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"><Zap className="mr-1 h-3 w-3" /> 100% free · runs in your browser · zero delays</Badge>
         <h1 className="mt-3 max-w-2xl text-3xl font-extrabold leading-tight tracking-tight text-foreground sm:text-4xl">
-          Data Analytics Academy — <span className="bg-gradient-to-r from-emerald-300 to-teal-400 bg-clip-text text-transparent">beginner to master</span>, by building real work.
+          Data Analytics Academy — <span className="bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent dark:from-emerald-300 dark:to-teal-400">beginner to master</span>, by building real work.
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-muted-foreground">
           {TOTAL_LESSONS} detailed lessons across 4 levels, 6 professional tools (Excel, DAX &amp; functions, BI dashboards, SQL, cleaning, automation) with live sample data,

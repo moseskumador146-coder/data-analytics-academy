@@ -229,10 +229,10 @@ export function AutomationTool() {
   return (
     <div className="space-y-4">
       <ToolHeader
-        icon={<Workflow className="h-5 w-5 text-violet-400" />}
+        icon={<Workflow className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />}
         title="Automation Studio"
         subtitle="Build ETL pipelines visually: ingest → clean → validate → aggregate → report. Exports real Python."
-        accent="violet"
+        accent="emerald"
         actions={
           <>
             <Select value={datasetId} onValueChange={(v) => { setDatasetId(v); setLogs([]); setOutput(null); }}>
@@ -242,7 +242,7 @@ export function AutomationTool() {
                 <SelectItem value="messy_sales">Retail Sales H2-2024 (Messy)</SelectItem>
               </SelectContent>
             </Select>
-            <Button size="sm" className="bg-violet-500 font-semibold text-white hover:bg-violet-400" onClick={run} disabled={running}>
+            <Button size="sm" className="bg-emerald-500 font-semibold text-black hover:bg-emerald-400" onClick={run} disabled={running}>
               {running ? <PlayCircle className="h-4 w-4 animate-pulse" /> : <Play className="h-4 w-4" />} Run pipeline
             </Button>
           </>
@@ -254,7 +254,7 @@ export function AutomationTool() {
         <div className="space-y-3">
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Workflow className="h-3.5 w-3.5 text-violet-400" /> Pipeline steps</span>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Workflow className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> Pipeline steps</span>
               <span className="text-[11px] text-muted-foreground/80">{steps.length} steps</span>
             </div>
             <div className="space-y-2 p-3">
@@ -262,7 +262,7 @@ export function AutomationTool() {
                 <div key={s.id} className="group rounded-lg border border-border bg-black/25 p-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <p className="flex items-center gap-2 text-[13px] font-semibold text-foreground/90">
-                      <span className="flex h-5 w-5 items-center justify-center rounded bg-violet-500/20 text-[11px] font-bold text-violet-300">{i + 1}</span>
+                      <span className="flex h-5 w-5 items-center justify-center rounded bg-emerald-500/15 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">{i + 1}</span>
                       {STEP_META[s.type].icon}<span>{STEP_META[s.type].label}</span>
                     </p>
                     <button className="text-muted-foreground/60 opacity-0 transition-opacity hover:text-red-500 group-hover:opacity-100" onClick={() => setSteps((ss) => ss.filter((x) => x.id !== s.id))}><Trash2 className="h-3.5 w-3.5" /></button>
@@ -303,7 +303,7 @@ export function AutomationTool() {
               ))}
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {(Object.keys(STEP_META) as StepType[]).map((t) => (
-                  <Button key={t} variant="outline" size="sm" className="h-7 border-border px-2 text-[11px] hover:bg-violet-500/10 hover:text-violet-300" onClick={() => addStep(t)}>
+                  <Button key={t} variant="outline" size="sm" className="h-7 border-border px-2 text-[11px] hover:bg-emerald-500/10 hover:text-emerald-700 dark:hover:text-emerald-300" onClick={() => addStep(t)}>
                     <Plus className="h-3 w-3" />{STEP_META[t].label}
                   </Button>
                 ))}
@@ -313,7 +313,7 @@ export function AutomationTool() {
 
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><FileCode2 className="h-3.5 w-3.5 text-violet-400" /> Generated Python</span>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><FileCode2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> Generated Python</span>
               <div className="flex gap-1">
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => setShowCode(!showCode)}>{showCode ? "Hide" : "View"}</Button>
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => downloadFile("pipeline.py", pythonCode, "text/x-python")}><Download className="h-3 w-3" /></Button>
@@ -334,7 +334,7 @@ export function AutomationTool() {
         <div className="space-y-3">
           <div className={PANEL}>
             <div className={PANEL_HEAD}>
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Bot className="h-3.5 w-3.5 text-violet-400" /> Run log</span>
+              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><Bot className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> Run log</span>
               {logs.length > 0 && (
                 <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={() => downloadFile("pipeline.json", JSON.stringify({ dataset: datasetId, steps, lastRun: logs }, null, 2), "application/json")}>
                   <Braces className="h-3 w-3" /> Export run
@@ -346,7 +346,7 @@ export function AutomationTool() {
               {logs.map((l, i) => (
                 <div key={i} className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${l.status === "fail" ? "bg-red-500/10 text-red-600 dark:text-red-300" : "bg-muted/40 text-foreground/80"}`}>
                   {l.status === "ok" ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />}
-                  <span className="text-violet-300/80">{l.step}</span>
+                  <span className="text-emerald-700/80 dark:text-emerald-300/80">{l.step}</span>
                   <span className="min-w-0 flex-1">{l.detail}</span>
                   <span className="shrink-0 text-muted-foreground/60">{l.ms}ms</span>
                 </div>

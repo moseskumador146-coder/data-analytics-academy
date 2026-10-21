@@ -122,15 +122,15 @@ export function ProjectsView() {
                       </p>
                       <p className="mt-1 text-[13.5px] leading-relaxed text-muted-foreground">{step.detail}</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
-                        {step.tool && <Badge variant="outline" className="border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">🛠 {step.tool}</Badge>}
+                        {step.tool && <Badge variant="outline" className="border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300">🛠 {step.tool}</Badge>}
                         {step.hint && (
-                          <button className="flex items-center gap-1 text-[11px] text-amber-400/80 hover:text-amber-300" onClick={() => toggleHint(hintKey)}>
+                          <button className="flex items-center gap-1 text-[11px] text-amber-600 hover:text-amber-700 dark:text-amber-400/80 dark:hover:text-amber-300" onClick={() => toggleHint(hintKey)}>
                             <Lightbulb className="h-3 w-3" /> {hints.has(hintKey) ? "Hide hint" : "Show hint"}
                           </button>
                         )}
                       </div>
                       {step.hint && hints.has(hintKey) && (
-                        <p className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2 text-[12.5px] text-amber-100/90">💡 {step.hint}</p>
+                        <p className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2 text-[12.5px] text-amber-900 dark:text-amber-100/90">💡 {step.hint}</p>
                       )}
                     </div>
                   </div>

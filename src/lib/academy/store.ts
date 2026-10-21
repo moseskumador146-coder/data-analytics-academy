@@ -75,6 +75,7 @@ interface AcademyState {
   view: ViewId;
   theme: "dark" | "light";
   completedLessons: Record<string, boolean>;
+  completedPractices: Record<string, boolean>;
   projectSteps: Record<string, boolean>;
   completedProjects: Record<string, boolean>;
   xp: number;
@@ -89,6 +90,7 @@ interface AcademyState {
   toggleTheme: () => void;
   setLastPathLevel: (l: string) => void;
   toggleLesson: (id: string) => void;
+  completePractice: (lessonId: string) => void;
   toggleStep: (projectId: string, stepIdx: number) => void;
   completeProject: (projectId: string) => void;
   addXp: (n: number) => void;
@@ -113,6 +115,7 @@ export const useAcademy = create<AcademyState>()(
       view: "home",
       theme: "light",
       completedLessons: {},
+      completedPractices: {},
       projectSteps: {},
       completedProjects: {},
       xp: 0,
@@ -141,6 +144,23 @@ export const useAcademy = create<AcademyState>()(
           done[id] = true;
           set({ completedLessons: done, xp: get().xp + 10 });
         }
+      },
+      /** Passing a lesson's practice lab: +25 XP and the lesson itself is
+          auto-marked complete (gated progression — reading alone is not enough). */
+      completePractice: (lessonId) => {
+        const already = get().completedPractices[lessonId];
+        if (already) return;
+        const lessons = { ...get().completedLessons };
+        let lessonXp = 0;
+        if (!lessons[lessonId]) {
+          lessons[lessonId] = true;
+          lessonXp = 10; // lesson-read completion bonus, same as toggleLesson
+        }
+        set({
+          completedPractices: { ...get().completedPractices, [lessonId]: true },
+          completedLessons: lessons,
+          xp: get().xp + 25 + lessonXp,
+        });
       },
       toggleStep: (projectId, stepIdx) => {
         const key = `${projectId}:${stepIdx}`;
@@ -233,6 +253,7 @@ export const useAcademy = create<AcademyState>()(
       resetProgress: () =>
         set({
           completedLessons: {},
+          completedPractices: {},
           projectSteps: {},
           completedProjects: {},
           xp: 0,

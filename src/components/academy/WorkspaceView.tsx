@@ -47,9 +47,9 @@ const kindIcon = (kind: string) => {
   switch (kind) {
     case "md": return <FileText className="h-3.5 w-3.5 text-muted-foreground" />;
     case "csv": return <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />;
-    case "json": return <FileJson className="h-3.5 w-3.5 text-amber-400" />;
-    case "py": return <FileCode2 className="h-3.5 w-3.5 text-sky-400" />;
-    case "sql": return <Braces className="h-3.5 w-3.5 text-violet-400" />;
+    case "json": return <FileJson className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
+    case "py": return <FileCode2 className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />;
+    case "sql": return <Braces className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />;
     default: return <FileText className="h-3.5 w-3.5 text-muted-foreground" />;
   }
 };
@@ -113,7 +113,7 @@ export function WorkspaceView() {
           onClick={() => (node.file ? setSelected(node.path) : toggleExpand(node.path))}
         >
           {isFolder ? <ChevronRight className={`h-3 w-3 shrink-0 text-muted-foreground/60 transition-transform ${isOpen ? "rotate-90" : ""}`} /> : <span className="w-3" />}
-          {isFolder ? <Folder className="h-3.5 w-3.5 shrink-0 text-amber-400/80" /> : kindIcon(node.file!.kind)}
+          {isFolder ? <Folder className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400/80" /> : kindIcon(node.file!.kind)}
           <span className="min-w-0 flex-1 truncate font-mono">{node.name}</span>
           {node.file && <span className="shrink-0 text-[10px] text-muted-foreground/60">{fmtSize(node.file.size)}</span>}
         </button>
@@ -194,7 +194,7 @@ export function WorkspaceView() {
                     <Button variant="outline" size="sm" className="h-7 border-border px-2 text-[11px]" onClick={() => downloadFile(selectedFile.path.split("/").pop()!, selectedFile.content)}>
                       <Download className="h-3 w-3" /> File
                     </Button>
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-red-400 hover:bg-red-500/10" onClick={() => { removeWorkspaceFile(selectedFile.path); setSelected(null); }}>
+                    <Button variant="ghost" size="sm" className="h-7 px-2 text-red-600 hover:bg-red-500/10 dark:text-red-400" onClick={() => { removeWorkspaceFile(selectedFile.path); setSelected(null); }}>
                       <Trash2 className="h-3 w-3" />
                     </Button>
                   </div>
@@ -238,7 +238,7 @@ export function WorkspaceView() {
           </ol>
           <div>
             <div className="flex items-center justify-between">
-              <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-muted-foreground/80"><TriangleAlert className="h-3.5 w-3.5 text-amber-400" /> Git commands (run inside the unzipped folder)</p>
+              <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-muted-foreground/80"><TriangleAlert className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" /> Git commands (run inside the unzipped folder)</p>
               <Button variant="outline" size="sm" className="h-7 border-border px-2 text-[11px]" onClick={copyCommands}><Copy className="h-3 w-3" /> Copy</Button>
             </div>
             <pre className="mt-2 overflow-x-auto rounded-lg border border-border bg-black/50 p-4 font-mono text-[11.5px] leading-relaxed text-emerald-200/90 scrollbar-thin">{GITHUB_GUIDE.commands}</pre>

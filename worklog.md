@@ -150,3 +150,26 @@ Stage Summary:
 - The Live Coach now sees the exact file loaded in Excel / Power BI / SQL, lists THAT file's unique problems with row-level evidence, fixes them one click (or copy-query in SQL), auto-detects every fix via instant re-scan, alerts what remains, and celebrates at 100 — until the user pauses or stops
 - Excel's Data tab is now a working replica of Microsoft's: 7 groups, 15+ real features, all dialogs functional
 - All overlays contained inside the browser; Ask answers structured + file-aware; paths have a friendly resume card
+
+---
+Task ID: 8
+Agent: Main agent (Super Z)
+Task: Too many colours + invisible light-mode text; learning path rebuilt as a clear gated roadmap where every lesson carries an embedded, auto-checked practice lab (all functions, data, hints, help and tool interfaces available inside the path).
+
+Work Log:
+- Colour audit across src/components/academy: found dark-only text classes (text-amber-300/orange-300/rose-300/violet-300/sky-300, amber-100/90 etc.) that vanish on white — the reported light-mode bug
+- Palette unified (user: "colours are too much"): academy shell now emerald (progress/brand) + neutral + amber for practice surfaces only; removed violet (AutomationTool → emerald), removed 4-hue level colours, levelBadgeCls → one neutral style, dataset size badges → neutral, HomeView tool cards 6 hues → 1, hero gradient made light-safe
+- Fixed light-mode text in ProjectsView (tool chips, hint button, hint text), AutomationTool (violet icons/numbers/buttons/log), WorkspaceView (file-kind icons, folder, delete button, git-commands heading); PathsView rewritten (was worst offender)
+- store.ts: added completedPractices + completePractice(lessonId) — +25 XP, auto-marks the lesson complete (+10), guarded against double-award; resetProgress clears it
+- Authored 84 practices in src/lib/academy/practices{,-a,-b,-c,-d}.ts — every lesson (b1l1…m5l4) has one: quiz (60) / excel (9) / sql (8) / dax (1) / clean (5); real-company briefs, 2–4 tasks each, progressive hints, function chips, model solutions
+- Checks are self-verifying: excel/sql/dax evaluate the learner's answer AND the authored solution through the real engines and compare (numeric tolerance / case-insensitive / result-set match incl. order-insensitive option) — no hand-computed expected values that can drift
+- Built src/components/academy/PracticeLab.tsx — the embedded lab: collapsible data preview (Excel sheet with column letters A–K + real row numbers / messy-table preview / SQL table list / DAX model note), per-kind interfaces (quiz cards with per-question feedback, fx-prefixed formula inputs with live evaluation, SQL textarea + result grid, DAX measure inputs), progressive hints → model answers after all hints, Functions-Lab + full-tool links, pass banner +25 XP; passes completePractice on success
+- Rewrote PathsView as a clear two-mode experience: ROADMAP (4-step "how it works" strip, continue card, 4 numbered level cards with outcomes chips + module accordions showing per-module progress, LAB/lab-passed badges per lesson, lock icons on not-yet-unlocked lessons) and LESSON VIEW (breadcrumb + Roadmap back, "In this lesson you will learn" objectives, content, embedded PracticeLab, gated footer: "Pass the lab to complete" chip, next-lesson button locked until the lab passes, Reset completion ghost button for legacy ticks)
+- Gating rule: lesson n unlocks when lesson n−1 is complete (completion = read tick OR lab passed — legacy progress stays compatible); completing a lab auto-ticks the lesson and unlocks the next
+- New scripts/validate-practices.ts: coverage 84/84 + every solution executed through the real engines → ALL PASSED (first run caught nothing after authoring; all engine tests re-run green)
+- Triple-check: tsc clean (src/), eslint clean, validate-practices 84/84, validate-academy ALL PASSED, test-formula-engine 49/49, test-dax 67/67, test-sql-window 20/20, test-challenges 22/22, test-sql OK; browser-verified (agent-browser, light + dark + 390px mobile): roadmap render, quiz pass (+35 XP, lesson auto-completed, next unlocked), locked-lesson click no-op, Excel lab wrong→correct verdicts ("got 686 — expected 1,326" then ✓), SQL lab wrong→16-rows match ✓, clean lab all-correct verdicts, DAX lab wrong→"evaluated to 2,231 — expected 172,940.84" then ✓, PASSED badge in dark mode, mobile no overflow, console clean, dev.log clean
+- Pushed the whole project to the user's GitHub (repo data-analytics-academy) using the PAT provided in the earlier request; token used only in the push URL, never stored in the repo
+
+Stage Summary:
+- The learning path is now a well-defined, gated journey: read → practice in the embedded lab → auto-pass → next unlocks; 84 unique hands-on labs (quiz/excel/sql/dax/clean) run on the real engines with hints, model answers and function help in place
+- Light mode is fully readable and the palette is unified to a restrained emerald + neutral system

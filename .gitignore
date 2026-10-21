@@ -42,3 +42,6 @@ server.log
 test
 yarn-debug.log*
 yarn-error.log*
+download/
+tool-results/
+download/
